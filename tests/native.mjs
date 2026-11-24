@@ -252,18 +252,10 @@ function verifiedPid(pid, profile) {
   }
 }
 async function stop() {
-  // The CDP session is scoped to the endpoint emitted by this private profile.
-  if (browser?.isConnected()) {
-    try {
-      const s = await browser.newBrowserCDPSession();
-      await s.send("Browser.close");
-    } catch {
-      /* Electron may close the transport with its window. */
-    }
-    await browser.close().catch(() => {});
-  }
+  // Disconnect before the host closes its windows and fires beforeunload.
+  if (browser?.isConnected()) await browser.close();
+  if (verifiedPid(mainPid, current?.profile)) process.kill(mainPid, "SIGTERM");
   for (let i = 0; verifiedPid(mainPid, current?.profile) && i < 40; i++) {
-    if (i === 10) process.kill(mainPid, "SIGTERM");
     await delay(100);
   }
   assert.equal(
