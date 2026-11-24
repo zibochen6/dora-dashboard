@@ -443,6 +443,7 @@ export class BoardView extends ItemView {
     const missing = this.t("This task or destination is no longer here. Your draft is still available.", "这条待办或写入位置已变化，你仍可复制草稿。");
     const copy = button(form, this.t("Copy draft", "复制草稿"), async () => {
       await input.ownerDocument.defaultView.navigator.clipboard.writeText(input.value);
+      copy.textContent = this.t("Draft copied", "已复制草稿");
     });
     copy.hidden = true;
     this.setInlineAvailable = present => {

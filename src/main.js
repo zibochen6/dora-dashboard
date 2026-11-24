@@ -484,7 +484,7 @@ export default class DoraDashboard extends Plugin {
     if (!opened) {
       try { opened = await this.notes.diary(cfg, day); }
       catch (error) {
-        if (!["Close the properties block in the source note first", "Close the open properties, code block or comment in the original journal"].includes(error.message)) throw error;
+        if (!["Close the properties block in the source note first", "Close the open properties, code block or comment in the original journal", "Open the original note to edit this ambiguous date heading"].includes(error.message)) throw error;
         form(this, day, [], () => this.openNote(this.notes.journalPath(cfg, day)),
           { text: this.errorText(error), submit: this.t("Open original note", "打开原文") });
         return;
