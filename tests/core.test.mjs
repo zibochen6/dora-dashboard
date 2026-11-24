@@ -102,6 +102,29 @@ test("migrate a legacy goal once and keep each currency independent", () => {
   assert.deepEqual(configFrom(cfg).financeGoals, {CNY:"90.00", USD:"1200.00"});
 });
 
+test("only real document headings can create or replace monthly entries", () => {
+  const blocks = [
+    "    2026-11-23\n---",
+    "<pre>\n## 2026-11-23\nExample.\n</pre>",
+    "<div>\n## 2026-11-23\nAn HTML example.\n</div>",
+    "> ## 2026-11-23",
+    "- An item\n  ## 2026-11-23",
+    "~~~md\n## 2026-11-23\n~~~",
+    "%%\n~~~\n## 2026-11-23\n%%",
+    "<!--\n## 2026-11-23\n-->",
+  ];
+  for (const block of blocks) {
+    const raw = "## 2026-11-22\n\nFirst.\n\n" + block + "\n\nThe rest of the 22nd.\n\n## 2026-11-24\nLast.\n";
+    assert.deepEqual([...journalEntries(raw,"2026-11").keys()], ["2026-11-22","2026-11-24"],block);
+    const day = journalDraft(raw,"2026-11-23");
+    assert.equal(day.original,null,block);
+    assert.equal(writeJournalDraft(raw,day,""),raw);
+    const next = writeJournalDraft(raw,day,"A real 23rd.");
+    assert.ok(next.startsWith(raw),block);
+    assert.equal(journalDraft(next,"2026-11-23").text,"A real 23rd.");
+  }
+});
+
 test("annotated, nested and Setext dates bound exactly one journal entry", () => {
   for (const heading of ["## 2026-11-23 <!-- Monday -->", "### 2026-11-23 %% Monday %%", "2026-11-23\r\n---", "### [[2026-11-23]]", "### **2026-11-23**", "### 📅 2026-11-23", "### [[Journal/2026-11-23|Monday]]"]) {
     const neighbor = heading + "\r\n\r\nKeep this entire day.\r\n## 2026-11-24\r\nThird.\r\n";

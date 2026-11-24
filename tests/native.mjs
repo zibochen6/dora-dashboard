@@ -486,6 +486,18 @@ async function emptyCase() {
     const p = app.plugins.plugins[id];
     return [...await p.notes.journalDays(p.cfg,["2026-11-22","2026-11-23"])];
   },id),["2026-11-23"]);
+  const codeMonth = "## 2026-11-22\n\n    2026-11-23\n---\n\n<pre>\n## 2026-11-23\nExample.\n</pre>\n\nStill the 22nd.\n\n## 2026-11-24\nLast.\n";
+  await page.evaluate(async ({id,archivePath,codeMonth}) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath(archivePath),codeMonth);
+    await app.plugins.plugins[id].editDiary("2026-11-23");
+  },{id,archivePath,codeMonth});
+  const newDay = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}),"the real 23rd");
+  assert.equal(await newDay.getByLabel("Journal entry").inputValue(),"");
+  await newDay.getByLabel("Journal entry").fill("A new, real day.");
+  await click("Save",newDay);
+  await newDay.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).startsWith(codeMonth));
+  accepted("Dates inside indented code and raw HTML stay literal when a real entry is created in the app");
   accepted("Clearing an annotated month leaves the linked next day byte-identical and the heatmap counts only requested dates");
   accepted(
     "Both daily and monthly journal layouts using independently configured folders",

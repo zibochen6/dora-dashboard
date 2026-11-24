@@ -1,3 +1,4 @@
+import { parser as markdown } from "@lezer/markdown";
 import { validDay } from "./model.ts";
 
 export interface JournalEntry {
@@ -20,117 +21,121 @@ export interface JournalDraft {
 }
 
 function journalSections(raw: string, month: string, editingDay?: string): JournalSection[] {
-  const entries: JournalSection[] = [];
-  let current: JournalSection | undefined;
-  let level = 0;
-  let fence = "";
-  let frontmatter = /^\uFEFF?---\s*(?:\r?\n|$)/.test(raw);
-  let commentEnd = "";
-  // Keep visible heading text on both sides of a comment. Code spans may contain
-  // literal comment markers and fenced examples may contain date headings.
-  function visibleLine(line: string) {
-    let visible = "", at = 0;
+  const lines = raw.split(/\r?\n/);
+  const offsets: number[] = [], positions: number[] = [], visible: string[] = [], syntax: string[] = [];
+  let offset = 0, position = 0;
+  let properties = /^\uFEFF?---[ \t]*(?:\r?\n|$)/.test(raw);
+  let comment = "", fence = "";
+  // Obsidian's %% comments are outside CommonMark. Mask them without moving a
+  // character. Keep ordinary Markdown, including HTML blocks, for the parser.
+  function scan(line: string) {
+    const structure = line.split("");
+    let text = "", from = 0;
     const markers = /<!--|%%|\x60+/g;
-    while (at < line.length) {
-      if (commentEnd) {
-        const close = line.indexOf(commentEnd, at);
-        if (close < 0) break;
-        at = close + commentEnd.length;
-        commentEnd = "";
+    while (from < line.length) {
+      if (comment) {
+        const close = line.indexOf(comment, from);
+        const end = close < 0 ? line.length : close + comment.length;
+        if (comment === "%%") structure.fill(" ", from, end);
+        from = end;
+        if (close >= 0) comment = "";
         continue;
       }
-      markers.lastIndex = at;
-      const match = markers.exec(line);
-      if (!match) return visible + line.slice(at);
-      visible += line.slice(at, match.index);
-      const marker = match[0];
-      at = markers.lastIndex;
+      markers.lastIndex = from;
+      const found = markers.exec(line);
+      if (!found) { text += line.slice(from); break; }
+      text += line.slice(from, found.index);
+      const marker = found[0];
+      from = markers.lastIndex;
       if (marker.startsWith("\x60")) {
-        const end = line.slice(at).match(new RegExp("(?<!\\x60)\\x60{" + marker.length + "}(?!\\x60)"));
-        const next = end ? at + end.index! + marker.length : at;
-        visible += line.slice(match.index, next);
-        at = next;
+        const close = line.slice(from).match(new RegExp("(?<!\\x60)\\x60{" + marker.length + "}(?!\\x60)"));
+        if (close) from += close.index! + marker.length;
+        text += line.slice(found.index, from);
+      } else if (/(?:^|[^\\])(?:\\\\)*\\$/.test(line.slice(0, found.index))) {
+        text += marker;
       } else {
-        if (/(?:^|[^\\])(?:\\\\)*\\$/.test(line.slice(0, match.index))) visible += marker;
-        else { commentEnd = marker === "%%" ? "%%" : "-->"; visible += " "; }
+        comment = marker === "%%" ? "%%" : "-->";
+        if (comment === "%%") structure.fill(" ", found.index, from);
+        text += " ";
       }
     }
-    return visible;
+    return {source: structure.join(""), text};
   }
-  const finish = (end: number) => {
+  for (const [index, rawLine] of lines.entries()) {
+    const line = index === 0 ? rawLine.replace(/^\uFEFF/, "") : rawLine;
+    offsets.push(offset);
+    positions.push(position);
+    offset += rawLine.length;
+    offset += raw.startsWith("\r\n", offset) ? 2 : raw.startsWith("\n", offset) ? 1 : 0;
+    let source = line, text = line;
+    if (properties) {
+      source = text = "";
+      if (index > 0 && /^(?:---|\.\.\.)[ \t]*$/.test(line)) properties = false;
+    } else {
+      const mark = line.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
+      if (fence) {
+        if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length && !mark[2].trim()) {
+          fence = ""; text = "";
+        }
+      } else if (!comment && mark) {
+        fence = mark[1]; text = "";
+      } else {
+        ({source, text} = scan(line));
+      }
+    }
+    syntax.push(source);
+    visible.push(text);
+    position += source.length + 1;
+  }
+  offsets.push(raw.length);
+  positions.push(position);
+  const tree = markdown.parse(syntax.join("\n"));
+  const entries: JournalSection[] = [];
+  let current: JournalSection | undefined;
+  let level = 0, row = 0, firstBodyLine = 0;
+  let openBlock = false;
+  const finish = (line: number) => {
     if (!current) return;
-    current.bodyEnd = end;
+    current.bodyEnd = offsets[line];
+    current.written = visible.slice(firstBodyLine, line).some(value => {
+      const text = value.trim();
+      return !!text && !/^([-*_])\1{2,}$/.test(text) && !/^(?:[-+*]\s*(?:\[[ xX]\])?|\d+[.)])$/.test(text);
+    });
     entries.push(current);
     current = undefined;
   };
-
-  let offset = 0;
-  const lines = raw.split(/\r?\n/);
-  for (const [index, rawLine] of lines.entries()) {
-    const start = offset;
-    const end = start + rawLine.length;
-    offset =
-      end +
-      (raw.startsWith("\r\n", end) ? 2 : raw.startsWith("\n", end) ? 1 : 0);
-    const line = index === 0 ? rawLine.replace(/^\uFEFF/, "") : rawLine;
-    if (frontmatter) {
-      if (index > 0 && /^(?:---|\.\.\.)[ \t]*$/.test(line)) frontmatter = false;
-      continue;
+  // Only document-level heading nodes bound entries. A heading-looking line
+  // in a list, quotation, indented code or raw HTML is part of that block.
+  for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
+    if (node.name === "FencedCode" && (node.lastChild?.name !== "CodeMark" || node.firstChild?.from === node.lastChild?.from))
+      openBlock = true;
+    const heading = node.name.match(/^(ATX|Setext)Heading([1-6])$/);
+    if (!heading) continue;
+    while (row + 1 < lines.length && positions[row + 1] <= node.from) row++;
+    const headingLine = row;
+    while (row + 1 < lines.length && positions[row + 1] < node.to) row++;
+    const section = (heading[1] === "ATX"
+      ? visible[headingLine].replace(/^ {0,3}#{1,6}(?:[ \t]+|$)/, "").replace(/[ \t]+#+[ \t]*$/, "")
+      : visible.slice(headingLine, row).join(" ")).trim();
+    const nextLevel = Number(heading[2]);
+    const dates = [...new Set(section.match(/(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)/g) ?? [])];
+    const title = section.replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F\u200D*_~\x60[(【「『]+/u, "");
+    const date = title.match(/^(?:[^\[\]()|#<>]*\/)?(\d{4}-\d{2}-\d{2})(?!\d)/)?.[1];
+    if (dates.length && (!validDay(date) || dates.length !== 1)) {
+      finish(headingLine);
+      if (editingDay && dates.includes(editingDay)) throw Error("Open the original note to edit this ambiguous date heading");
+    } else if (validDay(date)) {
+      finish(headingLine);
+      if (date.slice(0, 7) !== month) continue;
+      firstBodyLine = row + 1;
+      current = {date, section, written:false, headingStart:offsets[headingLine], bodyStart:offsets[firstBodyLine], bodyEnd:offsets[firstBodyLine]};
+      level = nextLevel;
+    } else if (nextLevel <= level) {
+      finish(headingLine);
     }
-    const fenceMarker = line.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
-    if (fence) {
-      if (
-        fenceMarker &&
-        fenceMarker[1][0] === fence[0] &&
-        fenceMarker[1].length >= fence.length && !fenceMarker[2].trim()
-      )
-        fence = "";
-      else if (current && line.trim()) current.written = true;
-      continue;
-    }
-    if (!commentEnd && fenceMarker) {
-      fence = fenceMarker[1];
-      continue;
-    }
-    const visible = visibleLine(line);
-    const heading = visible.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/);
-    const underline = visible.trim() && !commentEnd && lines[index + 1]?.match(/^ {0,3}(=+|-+)[ \t]*$/);
-    if (heading || underline) {
-      const section = (heading ? heading[2] ?? "" : visible).replace(/[ \t]+#+[ \t]*$/, "").trim();
-      const nextLevel = heading ? heading[1].length : underline && underline[1][0] === "=" ? 1 : 2;
-      const dates = [...new Set(section.match(/(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)/g) ?? [])];
-      // Accept a date in ordinary Obsidian heading decorations and links.
-      const title = section.replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F\u200D*_~\x60[(【「『]+/u, "");
-      const date = title.match(/^(?:[^\[\]()|#<>]*\/)?(\d{4}-\d{2}-\d{2})(?!\d)/)?.[1];
-      if (dates.length && (!validDay(date) || dates.length !== 1)) {
-        finish(start);
-        if (editingDay && dates.includes(editingDay)) throw Error("Open the original note to edit this ambiguous date heading");
-        continue;
-      }
-      if (validDay(date)) {
-        finish(start);
-        if (date.slice(0, 7) !== month) continue;
-        let bodyStart = offset;
-        if (!heading) {
-          bodyStart += lines[index + 1].length;
-          bodyStart += raw.startsWith("\r\n", bodyStart) ? 2 : raw.startsWith("\n", bodyStart) ? 1 : 0;
-        }
-        current = { date, section, written: false, headingStart: start, bodyStart, bodyEnd: bodyStart };
-        level = nextLevel;
-      } else if (nextLevel <= level) finish(start);
-      continue;
-    }
-    const content = visible.trim();
-    if (
-      current &&
-      content &&
-      !/^([-*_])\1{2,}$/.test(content) &&
-      !/^(?:[-+*]\s*(?:\[[ xX]\])?|\d+[.)])$/.test(content)
-    )
-      current.written = true;
   }
-  if (editingDay && (frontmatter || fence || commentEnd)) throw Error("Close the open properties, code block or comment in the original journal");
-  finish(raw.length);
+  if (editingDay && (properties || openBlock || comment)) throw Error("Close the open properties, code block or comment in the original journal");
+  finish(lines.length);
   return entries;
 }
 
