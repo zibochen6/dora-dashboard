@@ -1,0 +1,49 @@
+name: Desktop tests
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  native:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [release, directory]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Download published plugin files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$(node -p 'require("./manifest.json").version')" --dir dist \
+            --pattern main.js --pattern manifest.json --pattern styles.css
+          cmp manifest.json dist/manifest.json
+      - name: Prepare Obsidian and its virtual display
+        run: |
+          package="$RUNNER_TEMP/obsidian.deb"
+          curl --fail --show-error --silent --location --retry 3 \
+            https://github.com/obsidianmd/obsidian-releases/releases/download/v1.15.1/obsidian_1.15.1_amd64.deb -o "$package"
+          echo "f77b6dfc8c040214f2febad2b1b9b051b6a838a47b0f4fb90a31cfcb79b8fcec  $package" | sha256sum -c -
+          sudo dpkg -i "$package"
+          command -v Xvfb
+      - name: Test the release in isolated vaults
+        if: matrix.check == 'release'
+        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' npm run test:native
+      - name: Search, install and enable in the community directory
+        if: matrix.check == 'directory'
+        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' npm run test:native -- store
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-${{ matrix.check }}
+          path: test-results/native
+          if-no-files-found: ignore

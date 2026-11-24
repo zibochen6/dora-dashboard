@@ -1,7 +1,8 @@
-// Run after npm run build. The macOS launcher opens only new, hidden, temporary app profiles.
+// Use the Desktop tests workflow to run Obsidian on a separate virtual display.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   copyFile,
   mkdir,
@@ -17,8 +18,11 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 
-if (process.platform !== "darwin")
-  throw new Error("The hidden native test host currently runs on macOS.");
+const linux = process.platform === "linux";
+if (linux && !process.env.DISPLAY)
+  throw new Error("Start the native tests with xvfb-run on Linux.");
+if (!linux && (process.platform !== "darwin" || process.env.DORA_ALLOW_MAC_WINDOWS !== "1"))
+  throw new Error("Run the Desktop tests workflow for an isolated virtual display. Local macOS testing can show windows and requires DORA_ALLOW_MAC_WINDOWS=1.");
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const dist = join(repo, "dist");
 const manifest = JSON.parse(
@@ -26,7 +30,8 @@ const manifest = JSON.parse(
 );
 const id = manifest.id;
 assert.equal(id, "dora-dashboard");
-const bundle = process.env.OBSIDIAN_APP || "/Applications/Obsidian.app";
+const bundle = process.env.OBSIDIAN_APP ||
+  (linux ? "/opt/Obsidian/obsidian" : "/Applications/Obsidian.app");
 const work = await mkdtemp(
   join(await realpath(tmpdir()), "dora-public-native-"),
 );
@@ -66,15 +71,15 @@ async function put(path, text) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text);
 }
-async function makeHost(name) {
+async function makeHost(name, preinstall = true) {
   const root = join(work, name),
     profile = join(root, "profile"),
     vault = join(root, "vault");
   const plugin = join(vault, ".obsidian/plugins", id);
-  await mkdir(plugin, { recursive: true });
+  if (preinstall) await mkdir(plugin, { recursive: true });
   await put(
     join(vault, ".obsidian/community-plugins.json"),
-    JSON.stringify([id]),
+    JSON.stringify(preinstall ? [id] : []),
   );
   await put(
     join(vault, ".obsidian/appearance.json"),
@@ -89,7 +94,7 @@ async function makeHost(name) {
   await put(
     join(profile, key + ".json"),
     JSON.stringify({
-      x: -15000,
+      x: linux ? 0 : -15000,
       y: 40,
       width: 1440,
       height: 950,
@@ -113,8 +118,10 @@ async function install(host, predecessor = false) {
     JSON.stringify({ ...manifest, version: "0.9.0" }),
   );
 }
-async function endpoint(profile) {
+async function endpoint(profile, child) {
   for (let attempt = 0; attempt < 300; attempt++) {
+    if (child && (child.exitCode !== null || child.signalCode !== null))
+      throw new Error("Obsidian exited during startup: " + (child.exitCode ?? child.signalCode));
     try {
       const [port, path] = (
         await readFile(join(profile, "DevToolsActivePort"), "utf8")
@@ -135,21 +142,25 @@ async function endpoint(profile) {
 async function boot(host, version = manifest.version) {
   current = host;
   await rm(join(host.profile, "DevToolsActivePort"), { force: true });
-  execFileSync("/usr/bin/open", [
-    "-n",
-    "-g",
-    "-j",
-    "-a",
-    bundle,
-    "--args",
+  const args = [
     "--user-data-dir=" + host.profile,
     "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=0",
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
-  ]);
-  browser = await chromium.connectOverCDP(await endpoint(host.profile));
+  ];
+  let child;
+  if (linux) {
+    child = spawn(bundle, [...args, "--disable-dev-shm-usage"], {
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    await once(child, "spawn");
+    mainPid = child.pid;
+  } else {
+    execFileSync("/usr/bin/open", ["-n", "-g", "-j", "-a", bundle, "--args", ...args]);
+  }
+  browser = await chromium.connectOverCDP(await endpoint(host.profile, child));
   const session = await browser.newBrowserCDPSession();
   mainPid = (await session.send("SystemInfo.getProcessInfo")).processInfo.find(
     (p) => p.type === "browser",
@@ -178,9 +189,11 @@ async function boot(host, version = manifest.version) {
     await realpath(host.vault),
     "Only operate the temporary QA vault.",
   );
-  assert.deepEqual(loaded.manifests, [id]);
-  assert.equal(loaded.version, version);
+  assert.deepEqual(loaded.manifests, version ? [id] : []);
+  assert.equal(loaded.version, version ?? undefined);
   hostAgents.add(await page.evaluate(() => navigator.userAgent));
+  await page.setViewportSize({ width: 1400, height: 920 });
+  if (!version) return ctx;
   await page.waitForFunction(
     (id) =>
       !!app.plugins.plugins[id] ||
@@ -200,13 +213,12 @@ async function boot(host, version = manifest.version) {
     timeout: 30000,
   });
   await ctx.setOffline(true);
-  await page.setViewportSize({ width: 1400, height: 920 });
   return ctx;
 }
 function verifiedPid(pid, profile) {
   if (!pid || !profile?.startsWith(work + "/")) return false;
   try {
-    return execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
+    return execFileSync("/bin/ps", ["-ww", "-p", String(pid), "-o", "command="], {
       encoding: "utf8",
     }).includes("--user-data-dir=" + profile);
   } catch {
@@ -864,14 +876,61 @@ async function upgradeCase() {
   await stop();
 }
 
+async function storeCase() {
+  const host = await makeHost("Community directory", false);
+  await boot(host, null);
+  await page.evaluate(() => {
+    app.setting.open();
+    app.setting.openTabById("community-plugins");
+  });
+  const trust = page.getByRole("button", {
+    name: /^(Trust author and enable plugins|Turn on community plugins|信任仓库作者并启用插件|启用第三方插件|开启第三方插件|关闭安全模式)$/i,
+  }).first();
+  if (await trust.isVisible()) await trust.click();
+  await page.getByRole("button", { name: /^(Browse|浏览)$/i }).click();
+  const dialog = page.locator(".modal").last();
+  const search = dialog.locator("input:visible:not([type=checkbox]):not([type=range])").first();
+  await search.fill("Dataview");
+  await dialog.getByText("Dataview", { exact: true }).first().waitFor({ timeout: 30000 });
+  accepted("Native community search loaded a known listing in a new vault");
+
+  await search.fill(manifest.name);
+  const listing = dialog.getByText(manifest.name, { exact: true }).first();
+  try {
+    await listing.waitFor({ timeout: 15000 });
+  } catch (error) {
+    const message = "The native directory loaded, but did not return " + manifest.name + ".";
+    console.error(message, (await dialog.innerText()).slice(0, 550));
+    if (process.env.GITHUB_STEP_SUMMARY)
+      await writeFile(process.env.GITHUB_STEP_SUMMARY, message + "\n", { flag: "a" });
+    throw error;
+  }
+  await listing.click();
+  await page.getByRole("button", { name: /^(Install|安装)$/ }).click();
+  await page.getByRole("button", { name: /^(Enable|启用)$/ }).last().click({ timeout: 40000 });
+  await page.waitForFunction((id) => !!app.plugins.plugins[id], id);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await page.evaluate((id) => app.commands.executeCommandById(id + ":open"), id);
+  await page.locator(".dd-app [data-card=tasks]").waitFor();
+  const installed = JSON.parse(await readFile(join(host.plugin, "manifest.json"), "utf8"));
+  assert.equal(installed.id, id);
+  assert.equal(installed.version, manifest.version);
+  assert.ok(JSON.parse(await readFile(join(host.vault, ".obsidian/community-plugins.json"), "utf8")).includes(id));
+  assert.deepEqual(await page.evaluate(() => app.vault.getMarkdownFiles().map((f) => f.path)), []);
+  accepted("Installed " + installed.version + " from Browse, enabled it and opened the dashboard");
+  await stop();
+}
+
 const cases = {
   empty: emptyCase,
   library: libraryCase,
   creator: creatorCase,
   upgrade: upgradeCase,
+  store: storeCase,
 };
 const which = process.argv.slice(2);
-const selected = which.length ? which : Object.keys(cases);
+const selected = which.length ? which : ["empty", "library", "creator", "upgrade"];
 for (const key of selected)
   if (!Object.hasOwn(cases, key)) throw new Error("Unknown test case " + key);
 let succeeded = false;

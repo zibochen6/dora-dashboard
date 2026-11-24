@@ -37,6 +37,6 @@
 - **微信读书。** 本地书摘卡无需登录。直连时选择自己的[微信读书 API Key](https://weread.qq.com/r/weread-skills)，在 Obsidian 密钥库保存，测试连接后手动同步。请求发送到 `i.weread.qq.com`，书摘和评论在本地按密钥分别缓存。
 - **AI 寄语。** 自己选 HTTPS 模型服务、模型名、语言和密钥，只勾选允许发送的待办、项目或习惯。开启前和每次生成前都可查看实际请求。日记正文、财务与平台数据不参与发送。模型服务可能按使用量收费，生成结果按日保存在库内。
 
-开发使用 Node.js 24，依次运行 `npm ci`、`npm test`、`npm run build`。安装包的三个文件输出到 `dist/`。
+开发使用 Node.js 24，依次运行 `npm ci`、`npm test`、`npm run build`。安装包的三个文件输出到 `dist/`。在仓库的 **Actions → Desktop tests → Run workflow** 可用远程虚拟桌面验证发布文件与社区安装流程。测试只使用临时库和虚构数据。在 macOS 上需要看本机测试窗口时，显式运行 `DORA_ALLOW_MAC_WINDOWS=1 npm run test:native`。
 
 [MIT 许可证](LICENSE) · [第三方声明](THIRD-PARTY-NOTICES.md)

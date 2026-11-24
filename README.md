@@ -45,7 +45,7 @@ Creator identity, first works batches and follower reads have been tested on mac
 
 ## Development
 
-Use Node.js 24 and run `npm ci`, `npm test`, then `npm run build`. The three release assets are built in `dist/`. Optional native tests use isolated temporary vaults and a separate installed desktop Obsidian process: `npm run test:native` on macOS. These tests generate fictional data for the screenshot.
+Use Node.js 24 and run `npm ci`, `npm test`, then `npm run build`. The three release assets are built in `dist/`. Run **Actions → Desktop tests → Run workflow** to test the published files and the community installer in Obsidian on a remote virtual display. These tests use temporary vaults and fictional data. For an interactive local run on macOS, explicitly allow test windows with `DORA_ALLOW_MAC_WINDOWS=1 npm run test:native`.
 
 For a release, update `manifest.json`, the package version and `versions.json`, commit, then push the matching numeric Git tag (for example `1.0.1`). The release workflow runs tests and attaches `main.js`, `manifest.json` and `styles.css` individually. Users receive updates in Obsidian.
 
