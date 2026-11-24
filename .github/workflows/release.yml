@@ -1,0 +1,48 @@
+name: Release
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag already present in the repository
+        required: true
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Verify matching versions
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const json = path => JSON.parse(fs.readFileSync(path));
+          const manifest = json('dist/manifest.json');
+          assert.match(process.env.RELEASE_TAG, /^\d+\.\d+\.\d+$/);
+          assert.equal(manifest.version, process.env.RELEASE_TAG);
+          assert.equal(json('package.json').version, manifest.version);
+          assert.equal(json('versions.json')[manifest.version], manifest.minAppVersion);
+          JS
+      - name: Publish community plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo "Release already exists; upload a new version to change published files."
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "Dora Dashboard $RELEASE_TAG" --generate-notes dist/main.js dist/manifest.json dist/styles.css

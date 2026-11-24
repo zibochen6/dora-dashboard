@@ -1,0 +1,19 @@
+{
+  "name": "dora-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
+    "test:native": "node tests/native.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "esbuild": "0.25.4",
+    "obsidian": "1.14.4",
+    "playwright-core": "1.55.1",
+    "typescript": "5.8.3"
+  }
+}
