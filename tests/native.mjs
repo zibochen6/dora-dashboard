@@ -943,9 +943,23 @@ async function storeCase() {
   const installed = JSON.parse(await readFile(join(host.plugin, "manifest.json"), "utf8"));
   assert.equal(installed.id, id);
   assert.equal(installed.version, manifest.version);
-  assert.ok(JSON.parse(await readFile(join(host.vault, ".obsidian/community-plugins.json"), "utf8")).includes(id));
+  for (const asset of binaryAssets) {
+    const downloaded = await readFile(join(host.plugin, asset));
+    assert.equal(createHash("sha256").update(downloaded).digest("hex"), assetHashes[asset], asset);
+  }
   assert.deepEqual(await page.evaluate(() => app.vault.getMarkdownFiles().map((f) => f.path)), []);
   accepted("Installed " + installed.version + " from Browse, enabled it and opened the dashboard");
+  // Obsidian writes the enabled list asynchronously. Reopen the actual vault
+  // after the write to verify it can load the installed plugin again.
+  await waitRaw(".obsidian/community-plugins.json", JSON.stringify(id));
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    (id) => window.app?.workspace?.layoutReady && app.plugins.plugins[id]?.manifest.version,
+    id,
+    { timeout: 30000 },
+  );
+  assert.equal(await page.evaluate((id) => app.plugins.plugins[id].manifest.version, id), installed.version);
+  accepted("Community installation remained enabled on reopening the vault");
   await stop();
 }
 

@@ -8,7 +8,7 @@ Plan today's work, check in on habits, and see when you last wrote in your journ
 
 ## Install and update
 
-In **Settings → Community plugins → Browse**, search for **Dora Dashboard**, then install and enable it once the listing is available. Open the ribbon icon or run **Dora Dashboard: Open dashboard**. Use **Check for updates → Update** for later versions. While the listing is under review, the BRAT plugin can also install a beta from `zibochen6/dora-dashboard` using the same GitHub Release. The dashboard runs on desktop and includes English and Simplified Chinese.
+In Obsidian **Settings → Community plugins → Browse**, search for **Dora Dashboard**, then select **Install → Enable**. Open the dashboard from the ribbon or the command palette. To update, use **Check for updates → Update** in Community plugins. The dashboard supports desktop Obsidian 1.11.5 and later, in English and Simplified Chinese. [Open the community listing](https://community.obsidian.md/plugins/dora-dashboard)
 
 ## Your first day
 

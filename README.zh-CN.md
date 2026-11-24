@@ -8,7 +8,7 @@
 
 ## 安装与更新
 
-社区上架后，在 **设置 → 第三方插件 → 浏览** 搜索 **Dora Dashboard**，安装并启用。点 Obsidian 侧栏上的看板图标，或从命令面板运行「打开看板」。以后在第三方插件里点「检查更新 → 更新」即可。审核期间也可以使用 BRAT 从 `zibochen6/dora-dashboard` 安装 GitHub Release。支持桌面版，界面跟随 Obsidian，也可以手动选择中文和英文。
+在 Obsidian 的 **设置 → 第三方插件 → 浏览** 搜索 **Dora Dashboard**，点「安装 → 启用」。从侧栏图标或命令面板打开看板。后续在第三方插件里点「检查更新 → 更新」即可。支持 Obsidian 桌面版 1.11.5 及以上，界面跟随 Obsidian，也可以手动选择中文或英文。[打开社区插件页](https://community.obsidian.md/plugins/dora-dashboard)
 
 ## 从第一张卡片开始
 
