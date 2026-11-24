@@ -943,15 +943,6 @@ async function storeCase() {
   const installed = JSON.parse(await readFile(join(host.plugin, "manifest.json"), "utf8"));
   assert.equal(installed.id, id);
   assert.equal(installed.version, manifest.version);
-  const installedHashes = {};
-  for (const asset of binaryAssets) {
-    const downloaded = await readFile(join(host.plugin, asset));
-    installedHashes[asset] = createHash("sha256").update(downloaded).digest("hex");
-    if (installedHashes[asset] !== assetHashes[asset]) {
-      await put(join(output, "installed", asset), downloaded);
-      console.log(asset, "installed bytes:", downloaded.length, "sha256:", installedHashes[asset]);
-    }
-  }
   assert.deepEqual(await page.evaluate(() => app.vault.getMarkdownFiles().map((f) => f.path)), []);
   accepted("Installed " + installed.version + " from Browse, enabled it and opened the dashboard");
   // Obsidian writes the enabled list asynchronously. Reopen the actual vault
@@ -965,7 +956,17 @@ async function storeCase() {
   );
   assert.equal(await page.evaluate((id) => app.plugins.plugins[id].manifest.version, id), installed.version);
   accepted("Community installation remained enabled on reopening the vault");
-  assert.deepEqual(installedHashes, assetHashes, "Files received through the directory");
+  // Obsidian 1.15.1 can append this exact comment to a script it installs.
+  const hostFooter = Buffer.from("\n/* nosourcemap */");
+  for (const asset of binaryAssets) {
+    const released = await readFile(join(dist, asset));
+    const installedFile = await readFile(join(host.plugin, asset));
+    if (installedFile.equals(released)) continue;
+    if (asset === "main.js" && installedFile.equals(Buffer.concat([released, hostFooter]))) continue;
+    await put(join(output, "installed", asset), installedFile);
+    assert.fail("Community-installed file differs from the published release: " + asset);
+  }
+  accepted("Verified the contents of all three files received through the community directory");
   await stop();
 }
 
