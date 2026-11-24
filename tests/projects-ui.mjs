@@ -101,7 +101,7 @@ function host({code, original}) {
   window.qa = {
     read:path=>read()[path], config:()=>JSON.parse(localStorage.getItem("plugin")),
     async change(path,edit) { return vault.process(getFile(path),edit); },
-    async chinese() { await plugin.update(config => {config.language = "zh";}); },
+    async language(language) { await plugin.update(config => {config.language = language;}); },
   };
   return plugin.onload().then(() => makeView({}).onOpen());
 }
@@ -178,9 +178,39 @@ try {
   await inline.getByRole("alert").filter({hasText:/Task changed/}).waitFor();
   assert.equal(await inline.getByLabel("Task title").inputValue(),"Unsaved draft");
   await inline.getByLabel("Task title").press("Escape");
-  await page.evaluate(()=>window.qa.chinese());
+  await page.evaluate(()=>window.qa.language("zh"));
   await button("新建项目").waitFor();
   await button("编辑待办 · External title",linkedCard).waitFor();
+  await page.evaluate(() => window.qa.language("en"));
+  await button("New project").waitFor();
+  const backlog = today.locator("details");
+  await backlog.locator("summary").click();
+  const activeSummary = backlog.locator("summary");
+  await activeSummary.focus();
+  const old = await activeSummary.elementHandle();
+  await page.evaluate(path => window.qa.change(path, raw => raw + "\r\nOutside the list.\r\n"), linked.path);
+  await page.waitForFunction(node => !node.isConnected, old);
+  assert.equal(await backlog.evaluate(node => node.open), true);
+  assert.equal(await activeSummary.evaluate(node => node === document.activeElement), true);
+
+  // A repeated click during the same pending save produces one local action.
+  const todayTask = today.locator(".dd-task-surface .dd-task-row").filter({has:button("External title")});
+  const toggle = button("Toggle task · External title",todayTask);
+  await toggle.evaluate(b => { b.click(); b.click(); });
+  await page.waitForFunction(() => document.querySelector('[data-card=tasks] [aria-label="Toggle task · External title"]')?.getAttribute("aria-pressed") === "false");
+  await button("Remove from today",todayTask).click();
+  await todayTask.waitFor({state:"hidden"});
+  await button("Undo").click();
+  await todayTask.waitFor();
+  assert.equal(await button("Remove from today",todayTask).count(),1);
+  await button("Edit task · External title",todayTask).click();
+  await inline.getByLabel("Task title").fill("Changed in place");
+  await inline.getByLabel("Task title").press("Enter");
+  await button("Changed in place",today).waitFor();
+  await page.evaluate(path=>window.qa.change(path,raw=>raw.replace("Changed in place","Edited in the note")),linked.path);
+  await button("Undo").click();
+  await page.getByRole("status").filter({hasText:/Task changed/}).waitFor();
+  assert.ok((await read(linked.path)).includes("Edited in the note"));
   assert.deepEqual(errors,[]);
   console.log("PASS community project creation, linking, editing, Today and completion state, conflict handling, reopen, Chinese UI at 390px");
 } finally {

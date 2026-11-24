@@ -14,7 +14,7 @@ import {
 import { MediaController } from "./media-controller.ts";
 import { egoCollector } from "./media-collector.ts";
 import { DashboardSettings, SettingsDialog } from "./settings.js";
-import { button, el, form, pickPath, row } from "./ui.js";
+import { button, el, form, pickPath, row, iconButton } from "./ui.js";
 
 export default class DoraDashboard extends Plugin {
   async onload() {
@@ -150,6 +150,13 @@ export default class DoraDashboard extends Plugin {
         message.textContent = this.errorText(error);
       } finally { action.pending = false; }
     }, { icon: "undo-2", cls: "dd-link" });
+    iconButton(bar, this.t("Dismiss message", "收起提示"), "x", () => {
+      if (this.lastAction === action && !action.pending) {
+        this.lastAction = null;
+        for (const view of this.views) view.schedule();
+        redraw();
+      }
+    });
   }
   update(mutator) {
     const action = this.queue.then(async () => {

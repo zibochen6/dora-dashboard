@@ -369,6 +369,7 @@ async function emptyCase() {
   await modify(properties + "Changed elsewhere\r\n");
   await click("Save",diary);
   await diary.getByRole("button",{name:"Copy draft"}).waitFor();
+  await diary.screenshot({path:join(output,"journal-conflict.png"),animations:"disabled"});
   assert.equal(await input.inputValue(),"A recovered line.");
   assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
   await click("Discard draft",diary);
@@ -377,6 +378,7 @@ async function emptyCase() {
   await input.fill("");
   await click("Save",diary);
   assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
+  await diary.screenshot({path:join(output,"journal-clear.png"),animations:"disabled"});
   await click("Clear this day’s text",diary);
   await waitRaw(dailyPath,properties);
   await diary.waitFor({state:"hidden"});
@@ -493,12 +495,12 @@ async function screenshots() {
     app.workspace.leftSplit.collapse();
     app.workspace.rightSplit.collapse();
   });
-  await page.setViewportSize({ width: 1400, height: 920 });
+  await page.setViewportSize({ width: 1400, height: 1100 });
   const dashboard = page.locator(".dd-app");
   await page.evaluate(async (id) => {
     const p = app.plugins.plugins[id];
+    p.lastAction = null;
     for (const view of p.views) {
-      view.undo = undefined;
       await view.refresh();
     }
     await document.fonts.ready;
@@ -543,6 +545,11 @@ async function screenshots() {
     style,
     animations: "disabled",
   });
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.language = "zh"; }), id);
+  await page.getByRole("heading", {name:"今日待办",exact:true}).waitFor();
+  await page.screenshot({path:join(output,"dashboard-zh.png"),clip,style,animations:"disabled"});
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.language = "en"; }), id);
+  await page.getByRole("heading", {name:"Today's tasks",exact:true}).waitFor();
   // Theme classes are the host's documented selectors; these changes stay in this temporary renderer.
   await page.evaluate(() => {
     document.body.classList.remove("theme-light");
@@ -736,6 +743,15 @@ async function libraryCase() {
       id,
     ),
   );
+  const libraryReads = await page.evaluate(async id => {
+    const p = app.plugins.plugins[id], read = p.notes.readOptional;
+    const reads = [];
+    p.notes.readOptional = async function(path) { if (path.startsWith("Library/")) reads.push(path); return read.call(this,path); };
+    try { for (const view of p.views) await view.refresh(); }
+    finally { p.notes.readOptional = read; }
+    return reads;
+  }, id);
+  assert.deepEqual(libraryReads, []);
   await click("New page", settings);
   await submit({ "Page name": "Planning desk" });
   await click("Add widget", settings);
@@ -743,6 +759,12 @@ async function libraryCase() {
   await editor.getByLabel("Type").selectOption("milestones");
   await click("Save", editor);
   await editor.waitFor({ state: "hidden" });
+  await click("Remove widget",settings);
+  await settings.getByRole("button",{name:"Undo",exact:true}).click();
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.pages.find(p => p.title === "Planning desk")?.widgets[0]?.kind === "milestones",id);
+  await click("Remove page",settings);
+  await settings.getByRole("button",{name:"Undo",exact:true}).click();
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.pages.find(p => p.title === "Planning desk")?.widgets.length === 1,id);
   await settings.page().keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
   await click("Planning desk");
