@@ -83,6 +83,7 @@ export class JournalEditor extends Modal {
   }
   onClose() {
     this.plugin.journalEditors.delete(this.key);
+    if (this.plugin.active) for (const view of this.plugin.views) view.schedule();
     this.contentEl.empty();
   }
 }

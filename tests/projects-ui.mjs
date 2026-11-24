@@ -116,7 +116,7 @@ try {
   const errors = [];
   page.on("pageerror",error => errors.push(error.message));
   await page.route("http://localhost:12345/",route => route.fulfill({contentType:"text/html",body:`<!doctype html><style>${styles}
-    main{margin:0}.dd-modal{position:fixed;inset:10% 5% auto;background:white;padding:12px;z-index:10}</style><main></main>`}));
+    html,body,main.dd-host{height:100%;margin:0}.dd-modal{position:fixed;inset:10% 5% auto;background:white;padding:12px;z-index:10}</style><main></main>`}));
   async function boot() {
     await page.goto("http://localhost:12345/");
     await page.evaluate(host,{code,original});

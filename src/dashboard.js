@@ -51,6 +51,8 @@ export class BoardView extends ItemView {
   }
   async onOpen() {
     this.contentEl.addClass("dd-host");
+    this.viewport = el(this.contentEl, "div", "", "dd-viewport");
+    this.statusHost = el(this.contentEl, "div", "", "dd-status-host");
     this.plugin.views.add(this);
     const onFile = (file) => {
       if (
@@ -104,7 +106,7 @@ export class BoardView extends ItemView {
     for (const page of cfg.pages)
       navs.push([page.id, page.title, "panels-top-left"]);
     if (!navs.some(([key]) => key === this.page)) this.page = "home";
-    const previous = this.contentEl.firstElementChild;
+    const previous = this.viewport.firstElementChild;
     const samePage = previous && this.renderedPage === this.page;
     const doc = this.contentEl.ownerDocument;
     const root = this.contentEl.ownerDocument.createElement("div");
@@ -165,7 +167,7 @@ export class BoardView extends ItemView {
       el(title, "span", navs.find(([k]) => k === this.page)[1], "dd-marker");
     const body = el(content, "div", "", "dd-content");
     // Mount immediately so that a slow source never holds the rest of the page hostage.
-    if (!samePage) this.contentEl.replaceChildren(root);
+    if (!samePage) this.viewport.replaceChildren(root);
     this.renderedPage = this.page;
 
     const src = resolveSources(cfg);
@@ -308,11 +310,13 @@ export class BoardView extends ItemView {
     await Promise.all(guards);
     if (revision !== this.revision) return;
     if (samePage && this.inline?.isConnected && this.inline.closest(".dd-app") === previous && this.inlineConfig === cfg) return;
-    this.plugin.feedbackBar(body, () => this.refresh());
+    this.statusHost.replaceChildren();
+    this.statusHost.hidden = !this.plugin.lastAction;
+    this.plugin.feedbackBar(this.statusHost, () => this.refresh());
     const active = doc.activeElement;
     const inside = previous?.contains(active);
     const focus = inside ? controlKey(active) : "";
-    const scrolled = this.contentEl.scrollTop;
+    const scrolled = this.viewport.scrollTop;
     if (samePage) {
       const expanded = new Set([...previous.querySelectorAll("details[open] > summary")].map(controlKey));
       for (const summary of root.querySelectorAll("details > summary")) {
@@ -327,8 +331,8 @@ export class BoardView extends ItemView {
           this.inlineConfig = cfg;
         }
       }
-      this.contentEl.replaceChildren(root);
-      this.contentEl.scrollTop = scrolled;
+      this.viewport.replaceChildren(root);
+      this.viewport.scrollTop = scrolled;
     }
     const projectToFocus = this.focusProject;
     this.focusProject = null;
@@ -363,7 +367,7 @@ export class BoardView extends ItemView {
     };
     const check = iconButton(row, this.t("Toggle task", "切换完成状态") + " · " + task.label,
       task.done ? "circle-check" : "circle", () => change("done", !task.done,
-        task.done ? this.t("Reopened", "已恢复待办") : this.t("Completed", "已完成")));
+        task.done ? this.t("Marked incomplete", "已标为未完成") : this.t("Completed", "已完成")));
     check.setAttribute("aria-pressed", String(task.done));
     check.dataset.focus = task.id;
     if (task.milestone) icon(row, "flag");
@@ -660,6 +664,14 @@ export class BoardView extends ItemView {
       () => p.editDiary(this.today),
       { icon: "pen-line" },
     );
+    const pending = [...p.journalDrafts.entries()].reverse().find(([key]) => {
+      const [path, mode, day] = JSON.parse(key);
+      return mode === cfg.journalMode && path === p.notes.journalPath(cfg, day);
+    });
+    if (pending) {
+      const [, , day] = JSON.parse(pending[0]);
+      button(tools, this.t("Resume draft", "继续写草稿") + " · " + day, () => p.editDiary(day), { icon: "pencil", cls: "dd-link" });
+    }
     if (!cfg.sources.journal && !written.size)
       button(
         tools,
