@@ -381,7 +381,7 @@ function renderSettings(p, host, active, go) {
     button(
       projects,
       t("Link checklist", "关联已有清单"),
-      () => pickPath(p, "file", (path) => p.projectForm(false, path)),
+      () => pickPath(p, "file", path => p.projectForm({existing:path})),
       { icon: "link" },
     );
   } else {

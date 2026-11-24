@@ -13,7 +13,7 @@ In Obsidian **Settings → Community plugins → Browse**, search for **Dora Das
 ## Your first day
 
 1. Click **Write your first task**. It creates an ordinary Markdown checklist in your vault. Checking a task writes back to the source. **Undo last change** restores the checkbox.
-2. Click **Link checklist** for an existing project, including a note at the vault root. Use the calendar next to an item to plan it for today. New projects can also contain milestones.
+2. Click **New project** to create a checklist or link an existing Markdown note, including one at the vault root. Use **Add task** on the new card. The pencil buttons edit the project name and type or a task title. Use the calendar to plan a task for today. Projects can also contain milestones.
 3. Add a habit and choose the days you want to track. Click a tile to check in or undo it. Open **Habit history** to see previous dates.
 4. **Write today** opens today's journal. Select the vault folder and choose daily files (`YYYY-MM-DD.md`) or monthly files (`YYYY/YYYY-MM.md` with dated headings). The heatmap covers the last 15 weeks. Click a cell to open that day.
 

@@ -7,6 +7,7 @@ export interface Ref {
   block: string;
 }
 export interface Task extends Ref {
+  titleMarkdown: string;
   segment: number;
   identity: string;
   done: boolean;
@@ -65,6 +66,36 @@ function visibleText(text: string) {
 
 function blockTaskId(path: string, block: string) {
   return JSON.stringify(["block", path, block]);
+}
+
+// Preserve scheduling data, comments, and the existing Markdown block anchor.
+function taskTitleParts(content: string) {
+  let title = content.trimEnd();
+  const metadata = /[ \t]+(?:\^[\w-]+|<!--(?:(?!-->)[^\r\n])*-->|%%(?:(?!%%)[^\r\n])*%%|(?:📅|⏳|🛫|➕|✅|❌)\ufe0f? \d{4}-\d{2}-\d{2}|[⏫🔼🔽⏬🔺])$/u;
+  for (let match; (match = title.match(metadata));)
+    title = title.slice(0, match.index);
+  return { title, suffix: content.slice(title.length) };
+}
+
+export function renameTaskLine(parsed: Parsed, task: Task, input: string, block: string) {
+  const title = input.trim();
+  if (!title || /[\r\n]/.test(title)) throw Error("Enter a single-line task title");
+  const item = parsed.segments[task.segment].match(taskPattern)!;
+  const { suffix } = taskTitleParts(item[4]);
+  if (/<!--|-->|%%/.test(task.titleMarkdown) || /<!--|-->|%%/.test(title) || taskTitleParts(title).suffix)
+    throw Error("Edit inline comments and task markers in the source note");
+  const endSpace = suffix.match(/[ \t]*$/)![0];
+  const preserved = task.block
+    ? suffix
+    : suffix.slice(0, suffix.length - endSpace.length) + " ^" + block + endSpace;
+  const segments = [...parsed.segments];
+  segments[task.segment] = item[1] + item[2] + item[3] + title + preserved;
+  const text = segments.join("");
+  const matches = parseTasks(text, task.path).ordered.filter(row => row.block === block);
+  const updated = matches[0];
+  if (matches.length !== 1 || updated.segment !== task.segment || updated.section !== task.section || updated.titleMarkdown !== title)
+    throw Error("The task title could not be saved. Check the Markdown format");
+  return { text, task: updated };
 }
 
 // Blockless tasks retain the original identity and ordinal.
@@ -147,6 +178,7 @@ export function parseTasks(text: string, path: string): Parsed {
       id: JSON.stringify([identity, group.length]),
       count: 0,
       label: visibleText(shown[4]),
+      titleMarkdown: taskTitleParts(item[4]).title,
       block: item[4].match(/\s\^([\w-]+)\s*$/)?.[1] ?? "",
       done: item[2].toLowerCase() === "x",
       ordinal: group.length,

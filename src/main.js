@@ -74,6 +74,9 @@ export default class DoraDashboard extends Plugin {
     const labels = {
       "Task changed. Reopen the source note":
         "这条待办已变化，请重新打开原笔记。",
+      "Enter a single-line task title": "请填写单行待办标题。",
+      "Edit inline comments and task markers in the source note": "请在原笔记中编辑这条待办的行内注释或任务标记。",
+      "The task title could not be saved. Check the Markdown format": "无法保存这个待办标题，请检查 Markdown 格式。",
       "This journal changed elsewhere. Keep your draft and reopen it":
         "日记已在别处修改，请保留草稿并重新打开。",
       "Source note is missing": "找不到来源笔记，请重新绑定。",
@@ -257,56 +260,97 @@ export default class DoraDashboard extends Plugin {
       }),
     );
   }
-  projectForm(learning = false, existing = "") {
-    const p = this;
-    form(
-      this,
-      this.t("Project", "项目"),
-      [
-        {
-          key: "name",
-          label: this.t("Project name", "项目名称"),
-          required: true,
-          value: existing ? titleOf(existing) : "",
-        },
-        {
-          key: "kind",
-          label: this.t("Type", "类型"),
-          value: learning ? "learning" : "project",
-          options: [
-            ["project", this.t("Project", "普通项目")],
-            ["learning", this.t("Learning", "学习项目")],
-          ],
-        },
-      ],
-      async ({ name, kind }) => {
-        const id = uniqueId(),
-          safe = name
-            .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
-            .replace(/^[. ]+|[. ]+$/g, "")
-            .trim();
-        if (!safe) throw Error(p.t("Enter a project name", "请填写项目名称"));
-        const path = existing || this.cfg.root + "/Projects/" + safe + ".md";
-        if (this.cfg.projects.some((x) => x.path === path))
-          throw Error(this.t("Checklist already linked", "这份清单已关联"));
-        if (!existing)
-          await this.notes.updateDocument(path, (raw) => {
-            if (raw !== null)
-              throw Error(
-                this.t(
-                  "Choose Link checklist to use the existing note",
-                  "已有同名笔记，请用「关联已有清单」",
-                ),
-              );
-            return "# " + safe + "\n";
-          });
+  projectForm({ learning = false, existing = "", project: opened, afterSave } = {}) {
+    const t = (en, zh) => this.t(en, zh);
+    const fields = [
+      {
+        key: "name",
+        label: this.t("Project name", "项目名称"),
+        required: true,
+        value: opened?.name ?? (existing ? titleOf(existing) : ""),
+      },
+      {
+        key: "kind",
+        label: this.t("Type", "类型"),
+        value: (opened?.learning ?? learning) ? "learning" : "project",
+        options: [
+          ["project", this.t("Project", "普通项目")],
+          ["learning", this.t("Learning", "学习项目")],
+        ],
+      },
+    ];
+    if (!opened) {
+      const linked = new Set(this.cfg.projects.map(project => project.path));
+      fields.push({
+        key: "path",
+        label: t("Link existing Markdown (optional)", "关联已有 Markdown（可选）"),
+        value: existing,
+        placeholder: t("Leave blank to create a checklist", "留空自动新建清单"),
+        suggestions: this.app.vault.getMarkdownFiles().map(file => file.path)
+          .filter(path => visiblePath(path) && !linked.has(path)),
+      });
+    }
+    const title = opened
+      ? t("Edit project", "编辑项目")
+      : learning ? t("New learning project", "新建学习项目") : t("New project", "新建项目");
+    return form(this, title, fields, async ({ name, kind, path: linked }) => {
+      if (!name || name.length > 100 || /[\r\n]/.test(name))
+        throw Error(t("Enter a project name of 1–100 characters", "请输入 1–100 个字符的项目名称"));
+      const comparableName = name.toLowerCase();
+      const requireUniqueName = (cfg) => {
+        if (cfg.projects.some(project => project.id !== opened?.id && project.name.trim().toLowerCase() === comparableName)) {
+          throw Error(t("A project already uses that name", "已有同名项目"));
+        }
+      };
+      if (opened) {
+        await this.update(cfg => {
+          const current = cfg.projects.find(x => x.id === opened.id);
+          if (!current || current.path !== opened.path || current.name !== opened.name || current.learning !== opened.learning)
+            throw Error(t("The project changed. Reopen the editor", "项目信息已变更，请重新打开编辑窗口"));
+          if (comparableName !== current.name.trim().toLowerCase()) requireUniqueName(cfg);
+          current.name = name;
+          current.learning = kind === "learning";
+        });
+        return;
+      }
+      requireUniqueName(this.cfg);
+      const id = uniqueId(),
+        safe = name
+          .replace(/[<>:"/\\|?*#[\]\x00-\x1f]/g, " ")
+          .replace(/^[. ]+|[. ]+$/g, "")
+          .trim();
+      if (!linked && !safe) throw Error(t("Enter a project name", "请填写项目名称"));
+      const path = linked || this.cfg.root + "/Projects/" + [...safe].slice(0, 55).join("") + ".md";
+      if (this.cfg.projects.some((x) => x.path === path))
+        throw Error(this.t("Checklist already linked", "这份清单已关联"));
+      if (linked) {
+        if (!visiblePath(path) || !/\.md$/i.test(path) || (await this.notes.readOptional(path)) === null)
+          throw Error(t("Choose an existing Markdown note in this vault", "请选择库内已有 Markdown 笔记"));
+      } else {
+        await this.notes.updateDocument(path, (raw) => {
+          if (raw !== null)
+            throw Error(
+              this.t(
+                "Choose Link checklist to use the existing note",
+                "已有同名笔记，请用「关联已有清单」",
+              ),
+            );
+          return "# " + safe + "\n";
+        });
+      }
+      try {
         await this.update((cfg) => {
+          requireUniqueName(cfg);
           if (cfg.projects.some((x) => x.path === path))
             throw Error(this.t("Checklist already linked", "这份清单已关联"));
           cfg.projects.push({ id, name, path, learning: kind === "learning" });
         });
-      },
-    );
+      } catch (error) {
+        if (linked) throw error;
+        throw Error(t("Checklist created. Link it to retry", "清单已创建，请关联这份笔记重试") + " · " + path, {cause:error});
+      }
+      return id;
+    }, {submit: opened ? t("Save", "保存") : t("Create project", "创建项目"), afterSave});
   }
   habitForm(habit) {
     const t = (en, zh) => this.t(en, zh);

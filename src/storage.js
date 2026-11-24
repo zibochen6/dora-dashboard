@@ -7,6 +7,7 @@ import {
   parseTasks,
   matchTask,
   changeCheckbox,
+  renameTaskLine,
 } from "./model.ts";
 import {
   makeBlock,
@@ -187,6 +188,23 @@ export class Notes {
         block;
       return parsed.segments.join("");
     });
+  }
+  async renameTask(ref, title) {
+    const path = ref.sourceFile?.path ?? ref.path;
+    let updated;
+    await this.updateDocument(path, (raw) => {
+      if (raw === null || (ref.sourceFile && this.vault.getAbstractFileByPath(path) !== ref.sourceFile))
+        throw Error("Source note is missing");
+      const parsed = parseTasks(raw, ref.path);
+      const task = matchTask(parsed, ref);
+      if (!task || task.identity !== ref.identity || task.done !== ref.done)
+        throw Error("Task changed. Reopen the source note");
+      if (task.titleMarkdown === title.trim()) return raw;
+      const result = renameTaskLine(parsed, task, title, task.block || "dora-" + uniqueId());
+      updated = { ...ref, ...result.task, path };
+      return result.text;
+    });
+    return updated ?? ref;
   }
   async habits(root) {
     const raw = await this.readOptional(join(root, "Habits.md"));

@@ -331,6 +331,7 @@
 .dd-task-row button.dd-text,
 .dd-project-title button.dd-text {
   flex: 1;
+  min-width: 0;
   justify-content: flex-start;
   text-align: left;
   overflow-wrap: anywhere;
@@ -368,6 +369,9 @@
 }
 .dd-project-title button.dd-text {
   font-weight: 650;
+}
+.dd-card-head .dd-project-tools {
+  margin-inline-start: auto;
 }
 .dd-count {
   margin-inline-start: auto;

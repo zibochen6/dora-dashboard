@@ -57,6 +57,7 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
         const label = el(body, "label", "", "dd-field");
         el(label, "span", field.label);
         const input = el(label, tag);
+        input.setAttribute("aria-label", field.label);
         if (tag === "input") input.type = field.type || "text";
         if (field.options)
           for (const [value, name] of field.options)
@@ -65,6 +66,12 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
         input.required = !!field.required;
         if (field.placeholder) input.placeholder = field.placeholder;
         if (field.readOnly) input.readOnly = true;
+        if (field.suggestions?.length && tag === "input") {
+          const list = el(label, "datalist");
+          list.id = "dd-options-" + crypto.randomUUID();
+          for (const value of field.suggestions) el(list, "option").value = value;
+          input.setAttribute("list", list.id);
+        }
         inputs[field.key] = input;
       }
       if (options.text) el(body, "pre", options.text, "dd-preview");
@@ -85,7 +92,7 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
         ok.disabled = true;
         err.textContent = "";
         try {
-          await onSubmit(
+          const saved = await onSubmit(
             Object.fromEntries(
               Object.entries(inputs).map(([k, v]) => [
                 k,
@@ -94,6 +101,7 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
             ),
           );
           this.close();
+          if (options.afterSave) Promise.resolve(options.afterSave(saved)).catch(error => plugin.fail(error));
         } catch (e) {
           err.textContent = plugin.errorText?.(e) || e.message || String(e);
           ok.disabled = false;
