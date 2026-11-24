@@ -4,7 +4,7 @@
 
 [English](README.md)
 
-![用虚构项目、习惯和阅读笔记填充的首页](docs/dashboard.png)
+![用虚构项目、习惯和阅读笔记填充的首页](docs/dashboard-zh.png)
 
 ## 安装与更新
 
