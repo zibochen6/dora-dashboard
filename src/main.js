@@ -94,7 +94,13 @@ export default class DoraDashboard extends Plugin {
       "Close the properties block in the source note first": "请先在原笔记中补全属性块的结束标记。",
       "Invalid habit note": "习惯笔记格式有误，请检查原文。",
     };
-    return this.uiLanguage() === "zh" ? labels[msg] || msg : msg;
+    if (this.uiLanguage() === "zh") return labels[msg] || msg;
+    return ({
+      "这一天的日记在别处被修改了。请复制未保存的文字，再从原日记查看最新内容。": "This entry changed elsewhere. Your draft is still here.",
+      "当天有多个日期段，请打开日记原文编辑。": "Several sections have this date. Open the original note to edit them.",
+      "无法定位当天日记，请检查月记末尾是否有未闭合的代码块或注释。": "Check the original note for an unclosed code block or comment.",
+      "请使用比当天日期更深的 Markdown 标题（例如 ###），以免覆盖其他日记段落。": "Use a heading below the date heading so other journal entries stay intact.",
+    })[msg] || msg;
   }
   fail(error) {
     new Notice(this.errorText(error));
@@ -464,7 +470,16 @@ export default class DoraDashboard extends Plugin {
   async editDiary(day) {
     const cfg = this.cfg;
     const key = JSON.stringify([this.notes.journalPath(cfg, day), cfg.journalMode, day]);
-    const opened = this.journalDrafts.get(key)?.opened ?? await this.notes.diary(cfg, day);
+    let opened = this.journalDrafts.get(key)?.opened;
+    if (!opened) {
+      try { opened = await this.notes.diary(cfg, day); }
+      catch (error) {
+        if (error.message !== "Close the properties block in the source note first") throw error;
+        form(this, day, [], () => this.openNote(this.notes.journalPath(cfg, day)),
+          { text: this.errorText(error), submit: this.t("Open original note", "打开原文") });
+        return;
+      }
+    }
     const existing = this.journalEditors.get(key);
     if (existing) { existing.input?.focus(); return; }
     const editor = new JournalEditor(this, day, opened, key);

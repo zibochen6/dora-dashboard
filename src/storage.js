@@ -282,7 +282,10 @@ export class Notes {
       if (cfg.journalMode === "monthly") {
         for (const e of journalEntries(raw ?? "", day.slice(0, 7)).values())
           if (e.written) result.add(e.date);
-      } else if (raw && dailyDraft(raw).text.trim()) result.add(day);
+      } else if (raw) {
+        try { if (dailyDraft(raw).text.trim()) result.add(day); }
+        catch { result.add(day); } // Keep the date accessible for repairs in the original note.
+      }
     }
     return result;
   }

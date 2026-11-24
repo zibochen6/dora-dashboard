@@ -76,6 +76,12 @@ function select(parent, label, value, options, change) {
   input.addEventListener("change", () => change(input.value));
   return input;
 }
+function settingsControlKey(node) {
+  if (!node?.matches?.("input, button, select, summary")) return "";
+  const group = node.closest(".dd-custom-group")?.querySelector(".dd-setting-info strong")?.textContent ?? "";
+  const setting = node.closest(".dd-setting")?.querySelector(".dd-setting-info strong")?.textContent ?? "";
+  return JSON.stringify([group, setting, node.tagName, node.getAttribute("aria-label") || node.textContent]);
+}
 function renderSettings(p, host, active, go) {
   const t = (en, zh) => p.t(en, zh),
     cfg = p.cfg;
@@ -83,8 +89,14 @@ function renderSettings(p, host, active, go) {
     if (host.isConnected) go(active);
   };
   const edit = async (mutator) => {
+    const doc = host.ownerDocument;
+    const prior = host.contains(doc.activeElement) ? doc.activeElement : null;
+    const key = settingsControlKey(prior);
     await p.update(mutator);
+    const restore = prior && (doc.activeElement === prior || doc.activeElement === doc.body);
     redraw();
+    if (restore && key && doc.activeElement === doc.body)
+      [...host.querySelectorAll("input,button,select,summary")].find(node => settingsControlKey(node) === key)?.focus({preventScroll:true});
   };
   async function removeItem(listOf, index, item, label, kind) {
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

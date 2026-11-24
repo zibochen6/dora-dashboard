@@ -30,6 +30,7 @@ export class BoardView extends ItemView {
     this.index = { highlights: 0, thoughts: 0 };
     this.expanded = new Set();
     this.disposers = [];
+    this.inlineDrafts = new Map();
     this.revision = 0;
     this.t = (en, zh) => plugin.t(en, zh);
   }
@@ -89,7 +90,7 @@ export class BoardView extends ItemView {
   }
   async refresh() {
     if (this.closed) return;
-    if (this.inline?.isConnected && this.renderedPage === this.page && this.renderedConfig === this.plugin.cfg) return;
+    if (this.inline?.isConnected && this.renderedPage === this.page && this.inlineConfig === this.plugin.cfg) return;
     const revision = ++this.revision;
     this.drain();
     const cfg = this.plugin.cfg;
@@ -166,7 +167,7 @@ export class BoardView extends ItemView {
     // Mount immediately so that a slow source never holds the rest of the page hostage.
     if (!samePage) this.contentEl.replaceChildren(root);
     this.renderedPage = this.page;
-    this.renderedConfig = cfg;
+
     const src = resolveSources(cfg);
     const watch = (...paths) =>
       paths.filter(Boolean).forEach((p) => this.watched.add(p));
@@ -317,6 +318,15 @@ export class BoardView extends ItemView {
       for (const summary of root.querySelectorAll("details > summary")) {
         if (expanded.has(controlKey(summary))) summary.parentElement.open = true;
       }
+      if (this.inline?.isConnected && this.inlineTrigger) {
+        const triggerKey = controlKey(this.inlineTrigger);
+        const trigger = [...root.querySelectorAll("button")].find(node => controlKey(node) === triggerKey);
+        if (trigger) {
+          trigger.parentElement.after(this.inline);
+          this.inlineTrigger = trigger;
+          this.inlineConfig = cfg;
+        }
+      }
       this.contentEl.replaceChildren(root);
       this.contentEl.scrollTop = scrolled;
     }
@@ -370,26 +380,29 @@ export class BoardView extends ItemView {
         if (title.trim() === task.titleMarkdown) return;
         const undo = await this.plugin.notes.changeTask(task, "title", title);
         this.plugin.feedback(this.t("Renamed", "已改名") + " · " + title, undo);
-      }));
+      }, JSON.stringify([task.path, task.id])));
   }
-  editInline(trigger, label, initial, submit) {
+  editInline(trigger, label, initial, submit, draftKey) {
     if (this.inline?.isConnected) { this.inline.querySelector("input")?.focus(); return; }
     const form = el(trigger.parentElement, "form", "", "dd-inline");
     trigger.parentElement.after(form);
     this.inline = form;
+    this.inlineTrigger = trigger;
     this.inlineConfig = this.plugin.cfg;
     const input = el(form, "input");
     input.required = true;
     input.placeholder = label;
     input.setAttribute("aria-label", label);
-    input.value = initial;
+    input.value = this.inlineDrafts.get(draftKey) ?? initial;
+    input.oninput = () => this.inlineDrafts.set(draftKey, input.value);
     const save = el(form, "button", this.t("Save", "保存"), "mod-cta");
     save.type = "submit";
     let saving = false;
     const close = () => {
       if (this.inline === form) this.inline = null;
+      this.inlineDrafts.delete(draftKey);
       form.remove();
-      if (trigger.isConnected) trigger.focus({ preventScroll: true });
+      if (this.inlineTrigger?.isConnected) this.inlineTrigger.focus({ preventScroll: true });
       this.schedule();
     };
     button(form, this.t("Cancel", "取消"), () => { if (!saving) close(); });
@@ -411,10 +424,14 @@ export class BoardView extends ItemView {
     if (initial) input.select();
   }
   addTask(trigger, path, day = "", milestone = false) {
+    const projectId = trigger.closest("[data-project]")?.dataset.project;
     this.editInline(trigger, this.t("Title", "名称"), "", async title => {
+      const cfg = this.plugin.cfg;
+      const target = projectId ? cfg.projects.find(p => p.id === projectId)?.path : resolveSources(cfg).inbox;
+      if (target !== path) throw Error(this.t("The destination changed. Copy your text before closing.", "写入位置已变化，请先复制输入的文字。"));
       const undo = await this.plugin.notes.addTask(path, title, day, milestone);
       this.plugin.feedback(this.t("Added", "已添加") + " · " + title, undo);
-    });
+    }, JSON.stringify([path, projectId, day, milestone]));
   }
   taskCard(card, groups) {
     for (const g of groups)

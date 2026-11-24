@@ -24,6 +24,7 @@ export class JournalEditor extends Modal {
     if (plugin.journalDrafts.has(key)) status.textContent = t("Draft restored", "已恢复草稿");
     const actions = el(body, "div", "", "dd-row");
     const discard = button(actions, t("Discard draft", "放弃草稿"), () => {
+      if (this.saving) return;
       plugin.journalDrafts.delete(key);
       this.close();
     });

@@ -346,20 +346,25 @@ async function emptyCase() {
   const properties = "---\r\ntags: [field]\r\n---\r\n";
   const original = properties + "Old body\r\n";
   const modify = async raw => page.evaluate(async ({path,raw}) => app.vault.modify(app.vault.getAbstractFileByPath(path), raw), {path:dailyPath,raw});
+  let diary, input;
+  const openDiary = async () => {
+    await click("Write today");
+    diary = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByRole("textbox",{name:"Journal entry"})}), "the journal editor");
+    input = diary.getByLabel("Journal entry", {exact:true});
+  };
   await modify(original);
-  await click("Write today");
-  const diary = page.locator(".dd-modal");
-  const input = diary.getByLabel("Journal entry", {exact:true});
+  await openDiary();
   assert.equal(await input.inputValue(), "Old body\n");
   const priorMtime = (await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs;
   await click("Save",diary);
   await diary.waitFor({state:"hidden"});
   assert.equal(await noteAt(dailyPath),original);
   assert.equal((await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs,priorMtime);
-  await click("Write today");
+  await openDiary();
   await input.fill("A recovered line.");
-  await page.keyboard.press("Escape");
-  await click("Write today");
+  await diary.page().keyboard.press("Escape");
+  await diary.waitFor({state:"hidden"});
+  await openDiary();
   assert.equal(await input.inputValue(),"A recovered line.");
   await modify(properties + "Changed elsewhere\r\n");
   await click("Save",diary);
@@ -367,7 +372,8 @@ async function emptyCase() {
   assert.equal(await input.inputValue(),"A recovered line.");
   assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
   await click("Discard draft",diary);
-  await click("Write today");
+  await diary.waitFor({state:"hidden"});
+  await openDiary();
   await input.fill("");
   await click("Save",diary);
   assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
@@ -410,7 +416,7 @@ async function emptyCase() {
     '"expenseCents": 350',
   );
   await click("Set a goal");
-  await submit({ "Goal amount (clear to remove)": "1200.00" });
+  await submit({ "Goal amount": "1200.00" });
   await page.waitForFunction(
     (id) => app.plugins.plugins[id].cfg.financeGoals.CNY === "1200.00",
     id,
@@ -419,7 +425,7 @@ async function emptyCase() {
   await currency.selectOption("USD");
   await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "USD",id);
   await click("Set a goal");
-  await submit({ "Goal amount (clear to remove)": "45.00" });
+  await submit({ "Goal amount": "45.00" });
   await currency.selectOption("CNY");
   await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "CNY",id);
   assert.deepEqual(await page.evaluate(id => app.plugins.plugins[id].cfg.financeGoals,id), {CNY:"1200.00",USD:"45.00"});

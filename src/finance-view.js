@@ -221,19 +221,20 @@ function editGoal(view, folder) {
     [
       {
         key: "goal",
-        label: t("Goal amount (clear to remove)", "目标金额（留空可移除）"),
+        label: t("Goal amount", "目标金额"),
+        required: true,
         value: financeGoal,
       },
     ],
     async (values) => {
       assertSource(plugin, folder, t);
       const input = values.goal.trim();
-      const cents = input ? parseAmount(t, input) : null;
-      if (cents === 0)
+      const cents = parseAmount(t, input);
+      if (cents <= 0)
         throw new Error(
           t(
-            "Enter a positive goal or clear the field.",
-            "请输入正数目标，或留空移除目标。",
+            "Enter a positive goal.",
+            "请输入正数目标。",
           ),
         );
       await plugin.update((cfg) => {
@@ -244,11 +245,24 @@ function editGoal(view, folder) {
               "设置已在别处修改，请重新打开目标后编辑。",
             ),
           );
-        if (cents === null) delete cfg.financeGoals[currency];
-        else cfg.financeGoals[currency] = decimal(cents);
+        cfg.financeGoals[currency] = decimal(cents);
       });
       await view.refresh();
-    },
+    }, { setup: ({ row, modal }) => {
+      if (!financeGoal) return;
+      button(row, t("Remove goal", "移除目标"), async () => {
+        await plugin.update(cfg => {
+          if (cfg.financeGoals[currency] !== financeGoal || cfg.currency !== currency || !currentSource(plugin, folder))
+            throw Error(t("The goal changed. Reopen it.", "目标已变化，请重新打开。"));
+          delete cfg.financeGoals[currency];
+        });
+        plugin.feedback(t("Goal removed", "已移除目标") + " · " + currency, () => plugin.update(cfg => {
+          if (cfg.financeGoals[currency]) throw Error(t("Another goal exists for this currency.", "此币种已有新目标。"));
+          cfg.financeGoals[currency] = financeGoal;
+        }));
+        modal.close(); await view.refresh();
+      }, { cls: "dd-link" });
+    } },
   );
 }
 
