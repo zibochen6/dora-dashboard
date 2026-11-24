@@ -659,8 +659,8 @@ async function libraryCase() {
   );
   await screenshots();
   await page.setViewportSize({ width: 1400, height: 920 });
-  await click("Settings");
-  const settings = page.locator(".dd-settings-dialog");
+  await click("Settings", page.locator(".dd-nav"));
+  const settings = await visibleControl((p) => p.locator(".dd-settings-dialog").last(), "dashboard settings");
   for (const tab of [
     "Appearance & layout",
     "Pages & cards",
@@ -691,11 +691,11 @@ async function libraryCase() {
   await click("New page", settings);
   await submit({ "Page name": "Planning desk" });
   await click("Add widget", settings);
-  const editor = page.locator(".dd-modal");
+  const editor = await visibleControl((p) => p.locator(".dd-modal").last(), "the widget editor");
   await editor.getByLabel("Type").selectOption("milestones");
   await click("Save", editor);
   await editor.waitFor({ state: "hidden" });
-  await page.keyboard.press("Escape");
+  await settings.page().keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
   await click("Planning desk");
   await page
@@ -912,7 +912,7 @@ async function storeCase() {
   await openSettings();
   const browse = (p) => p.getByRole("button", { name: /^(Browse|浏览)$/i }).first();
   const trust = (p) => p.getByRole("button", {
-    name: /^(Trust author and enable plugins|Turn on community plugins|信任仓库作者并启用插件|启用第三方插件|开启第三方插件|关闭安全模式)$/i,
+    name: /^(Exit Restricted mode|Trust author and enable plugins|Turn on community plugins|退出受限模式|信任仓库作者并启用插件|启用第三方插件|开启第三方插件|关闭安全模式)$/i,
   }).first();
   const choice = await visibleControl((p) => browse(p).or(trust(p)).first(), "community plugin settings");
   if (await trust(choice.page()).isVisible()) {
