@@ -943,9 +943,14 @@ async function storeCase() {
   const installed = JSON.parse(await readFile(join(host.plugin, "manifest.json"), "utf8"));
   assert.equal(installed.id, id);
   assert.equal(installed.version, manifest.version);
+  const installedHashes = {};
   for (const asset of binaryAssets) {
     const downloaded = await readFile(join(host.plugin, asset));
-    assert.equal(createHash("sha256").update(downloaded).digest("hex"), assetHashes[asset], asset);
+    installedHashes[asset] = createHash("sha256").update(downloaded).digest("hex");
+    if (installedHashes[asset] !== assetHashes[asset]) {
+      await put(join(output, "installed", asset), downloaded);
+      console.log(asset, "installed bytes:", downloaded.length, "sha256:", installedHashes[asset]);
+    }
   }
   assert.deepEqual(await page.evaluate(() => app.vault.getMarkdownFiles().map((f) => f.path)), []);
   accepted("Installed " + installed.version + " from Browse, enabled it and opened the dashboard");
@@ -960,6 +965,7 @@ async function storeCase() {
   );
   assert.equal(await page.evaluate((id) => app.plugins.plugins[id].manifest.version, id), installed.version);
   accepted("Community installation remained enabled on reopening the vault");
+  assert.deepEqual(installedHashes, assetHashes, "Files received through the directory");
   await stop();
 }
 
