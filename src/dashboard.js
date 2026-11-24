@@ -53,6 +53,17 @@ export class BoardView extends ItemView {
     this.contentEl.addClass("dd-host");
     this.viewport = el(this.contentEl, "div", "", "dd-viewport");
     this.statusHost = el(this.contentEl, "div", "", "dd-status-host");
+    const statusBar = this.contentEl.ownerDocument.querySelector(".status-bar");
+    const measure = () => {
+      const area = this.contentEl.getBoundingClientRect(), status = statusBar?.getBoundingClientRect();
+      const overlap = status?.height && area.right > status.left && area.left < status.right &&
+        status.top < area.bottom && status.bottom > area.top ? area.bottom - status.top : 0;
+      this.statusHost.style.paddingBottom = Math.ceil(overlap) + "px";
+    };
+    this.statusObserver = new ResizeObserver(measure);
+    this.statusObserver.observe(this.contentEl);
+    if (statusBar) this.statusObserver.observe(statusBar);
+    measure();
     this.plugin.views.add(this);
     const onFile = (file) => {
       if (
@@ -76,6 +87,7 @@ export class BoardView extends ItemView {
     await this.refresh();
   }
   async onClose() {
+    this.statusObserver?.disconnect();
     this.plugin.views.delete(this);
     this.closed = true;
     this.revision++;

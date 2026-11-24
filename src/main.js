@@ -86,7 +86,7 @@ export default class DoraDashboard extends Plugin {
       "Edit inline comments and task markers in the source note": "请在原笔记中编辑这条待办的行内注释或任务标记。",
       "The task title could not be saved. Check the Markdown format": "无法保存这个待办标题，请检查 Markdown 格式。",
       "This journal changed elsewhere. Keep your draft and reopen it":
-        "日记已在别处修改，请保留草稿并重新打开。",
+        "原笔记已在别处修改，草稿仍在这里。",
       "Source note is missing": "找不到来源笔记，请重新绑定。",
       "Choose a visible vault path": "请选择库内可见路径。",
       "Choose a file inside this vault": "请选择当前库中的实际文件。",
@@ -96,6 +96,7 @@ export default class DoraDashboard extends Plugin {
     };
     if (this.uiLanguage() === "zh") return labels[msg] || msg;
     return ({
+      "This journal changed elsewhere. Keep your draft and reopen it": "This note changed elsewhere. Your draft is still here.",
       "这一天的日记在别处被修改了。请复制未保存的文字，再从原日记查看最新内容。": "This entry changed elsewhere. Your draft is still here.",
       "当天有多个日期段，请打开日记原文编辑。": "Several sections have this date. Open the original note to edit them.",
       "无法定位当天日记，请检查月记末尾是否有未闭合的代码块或注释。": "Check the original note for an unclosed code block or comment.",
