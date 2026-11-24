@@ -101,3 +101,25 @@ test("migrate a legacy goal once and keep each currency independent", () => {
   cfg.currency="CNY"; cfg.financeGoals.CNY="90.00";
   assert.deepEqual(configFrom(cfg).financeGoals, {CNY:"90.00", USD:"1200.00"});
 });
+
+test("annotated, nested and Setext dates bound exactly one journal entry", () => {
+  for (const heading of ["## 2026-11-23 <!-- Monday -->", "### 2026-11-23 %% Monday %%", "2026-11-23\r\n---", "### [[2026-11-23]]", "### **2026-11-23**", "### 📅 2026-11-23", "### [[Journal/2026-11-23|Monday]]"]) {
+    const neighbor = heading + "\r\n\r\nKeep this entire day.\r\n## 2026-11-24\r\nThird.\r\n";
+    const raw = "## 2026-11-22\r\n\r\nFirst.\r\n\r\n" + neighbor;
+    const opened = journalDraft(raw, "2026-11-22");
+    assert.equal(opened.text, "First.");
+    for (const body of ["", "New first day."])
+      assert.ok(writeJournalDraft(raw, opened, body).endsWith(neighbor));
+    assert.equal(journalDraft(raw, "2026-11-23").text, "Keep this entire day.");
+  }
+  const mixedBody = "One\r\nTwo\nThree\r\nFour\n";
+  assert.equal(writeDailyBody(mixedBody, "One\nEdited\nThree\nFour\n"), "One\r\nEdited\nThree\r\nFour\n");
+  const mixedMonth = "## 2026-11-22\r\n\n" + mixedBody + "\r\n## 2026-11-23\nNext.\n";
+  assert.equal(writeJournalDraft(mixedMonth, journalDraft(mixedMonth,"2026-11-22"), "One\nEdited\nThree\nFour"), mixedMonth.replace("Two", "Edited"));
+  const ambiguous = "## 2026-11-22\nFirst\n### Notes for 2026-11-23 and 2026-11-24\nKeep\n";
+  assert.ok(writeJournalDraft(ambiguous,journalDraft(ambiguous,"2026-11-22"),"").endsWith("### Notes for 2026-11-23 and 2026-11-24\nKeep\n"));
+  assert.throws(() => journalDraft(ambiguous,"2026-11-23"),/ambiguous/);
+  const fenced = "## 2026-11-22\n\n~~~\n## 2026-11-23\n~~~\n";
+  assert.equal(journalEntries(fenced,"2026-11").size,1);
+  assert.throws(() => journalDraft("## 2026-11-22\n%%\n## 2026-11-23","2026-11-22"), /Close the open/);
+});

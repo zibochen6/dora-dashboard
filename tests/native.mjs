@@ -327,6 +327,18 @@ async function emptyCase() {
   await waitRaw(inbox, "[x] " + title);
   await click("Undo");
   await waitRaw(inbox, "[ ] " + title);
+  const protectedParent = await page.evaluate(async ({id,inbox}) => {
+    const p = app.plugins.plugins[id], undo = await p.notes.addTask(inbox,"New parent");
+    const file = app.vault.getAbstractFileByPath(inbox);
+    await app.vault.process(file, raw => raw + "  - [ ] Externally added child\n");
+    const before = await app.vault.read(file);
+    let conflict = "";
+    try { await undo(); } catch (err) { conflict = err.message; }
+    return {same:(await app.vault.read(file)) === before,conflict};
+  },{id,inbox});
+  assert.equal(protectedParent.same,true);
+  assert.match(protectedParent.conflict,/nested content/);
+  accepted("Undo preserves an externally added child and its parent task");
   await click("Add habit");
   await submit({ "Habit name": "Morning walk" });
   const habit = page.getByRole("button", { name: /^Morning walk/ });
@@ -454,6 +466,27 @@ async function emptyCase() {
       "A new page",
     ),
   );
+  const archivePath = "My journal/2026/2026-11.md";
+  const neighbor = "### [[2026-11-23]] <!-- Monday -->\r\n\r\nKeep this day.\r\n### 📅 2026-11-25\r\nFuture day.\n";
+  await page.evaluate(async ({id,archivePath,neighbor}) => {
+    const content = "## 2026-11-22\r\n\r\nFirst day.\r\n\r\n" + neighbor;
+    const folder = "My journal/2026", file = app.vault.getAbstractFileByPath(archivePath);
+    if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
+    if (file) await app.vault.modify(file,content); else await app.vault.create(archivePath,content);
+    await app.plugins.plugins[id].editDiary("2026-11-22");
+  },{id,archivePath,neighbor});
+  const entry = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}),"November 22");
+  assert.equal(await entry.getByLabel("Journal entry").inputValue(),"First day.");
+  await entry.getByLabel("Journal entry").fill("");
+  await click("Save",entry);
+  await click("Clear this day’s text",entry);
+  await entry.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).endsWith(neighbor));
+  assert.deepEqual(await page.evaluate(async id => {
+    const p = app.plugins.plugins[id];
+    return [...await p.notes.journalDays(p.cfg,["2026-11-22","2026-11-23"])];
+  },id),["2026-11-23"]);
+  accepted("Clearing an annotated month leaves the linked next day byte-identical and the heatmap counts only requested dates");
   accepted(
     "Both daily and monthly journal layouts using independently configured folders",
   );
@@ -716,6 +749,35 @@ async function libraryCase() {
   );
   await screenshots();
   await page.setViewportSize({ width: 1400, height: 920 });
+  // A settings update must never transplant a draft onto a namesake in another file.
+  const duplicate = "- [ ] Identical task <!-- dora-day:" + today + " --> ^same\n";
+  await page.evaluate(async ({id,duplicate}) => {
+    const p = app.plugins.plugins[id];
+    for (const path of ["A.md","B.md"]) await app.vault.create(path,duplicate);
+    await p.update(c => c.projects.push(...["A","B"].map(key => ({id:key,name:key,path:key+".md",learning:false}))));
+  }, {id,duplicate});
+  const todayCard = page.locator("[data-card=tasks]");
+  const namesakes = todayCard.getByRole("button",{name:"Edit task · Identical task"});
+  await namesakes.nth(1).click();
+  const inline = page.locator(".dd-inline");
+  await inline.getByRole("textbox").fill("Keep my draft for B");
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.nickname = "Alex River"; }),id);
+  await page.waitForFunction(() => document.querySelector(".dd-hero h1")?.textContent.includes("Alex River"));
+  assert.ok((await inline.evaluate(form => form.previousElementSibling.dataset.task)).includes("B.md"));
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.projects = c.projects.filter(p => p.id !== "B"); }), id);
+  await inline.getByRole("button",{name:"Copy draft"}).waitFor();
+  assert.ok(await inline.getByRole("button",{name:"Save"}).isDisabled());
+  assert.equal(await inline.getByRole("textbox").inputValue(),"Keep my draft for B");
+  await inline.getByRole("textbox").press("Enter");
+  assert.equal(await noteAt("A.md"),duplicate);
+  assert.equal(await noteAt("B.md"),duplicate);
+  await click("Cancel",inline);
+  const navLearning = page.locator(".dd-nav").getByRole("button",{name:"Learning"});
+  await navLearning.focus();
+  await navLearning.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-current") === "page" && document.activeElement.textContent.includes("Learning"));
+  await click("Home");
+  accepted("Namesake tasks keep the exact source after refresh; unlink preserves the unsaved input and blocks writes; keyboard navigation keeps focus");
   await click("Settings", page.locator(".dd-nav"));
   const settings = await visibleControl((p) => p.locator(".dd-settings-dialog").last(), "dashboard settings");
   for (const tab of [
@@ -1138,6 +1200,7 @@ try {
     const report = {
       plugin: manifest.id,
       version: manifest.version,
+      sourceCommit: process.env.DORA_SOURCE_COMMIT,
       hostAgents: [...hostAgents],
       assetHashes,
       cases: selected,

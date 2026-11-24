@@ -82,6 +82,8 @@ export default class DoraDashboard extends Plugin {
     const labels = {
       "Task changed. Reopen the source note":
         "这条待办已变化，请重新打开原笔记。",
+      "The task source is no longer linked": "这条待办的来源已取消关联。",
+      "This task now has nested content. Open the source note": "这条待办已添加子项，请打开原笔记查看。",
       "Enter a single-line task title": "请填写单行待办标题。",
       "Edit inline comments and task markers in the source note": "请在原笔记中编辑这条待办的行内注释或任务标记。",
       "The task title could not be saved. Check the Markdown format": "无法保存这个待办标题，请检查 Markdown 格式。",
@@ -91,6 +93,8 @@ export default class DoraDashboard extends Plugin {
       "Choose a visible vault path": "请选择库内可见路径。",
       "Choose a file inside this vault": "请选择当前库中的实际文件。",
       "A folder already uses this name": "这个名称已被一个文件夹使用。",
+      "Open the original note to edit this ambiguous date heading": "这个标题中的日期含义不明确，请打开日记原文编辑。",
+      "Close the open properties, code block or comment in the original journal": "请先在日记原文中补全未闭合的属性块、代码块或注释。",
       "Close the properties block in the source note first": "请先在原笔记中补全属性块的结束标记。",
       "Invalid habit note": "习惯笔记格式有误，请检查原文。",
     };
@@ -480,7 +484,7 @@ export default class DoraDashboard extends Plugin {
     if (!opened) {
       try { opened = await this.notes.diary(cfg, day); }
       catch (error) {
-        if (error.message !== "Close the properties block in the source note first") throw error;
+        if (!["Close the properties block in the source note first", "Close the open properties, code block or comment in the original journal"].includes(error.message)) throw error;
         form(this, day, [], () => this.openNote(this.notes.journalPath(cfg, day)),
           { text: this.errorText(error), submit: this.t("Open original note", "打开原文") });
         return;

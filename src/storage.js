@@ -170,16 +170,24 @@ export class Notes {
         const parsed = parseTasks(raw, path);
         const current = matchTask(parsed, appended);
         if (!current || parsed.segments[current.segment] !== line) throw Error("Task changed. Reopen the source note");
+        // An indented continuation belongs to this item. Removing only the
+        // parent would silently reparent notes or nested tasks added elsewhere.
+        const following = parsed.segments.slice(current.segment + 2).filter((_, index) => index % 2 === 0);
+        const nextLine = following.find(part => part.trim());
+        const indent = line.match(/^\s*/)[0].length;
+        if (nextLine && (nextLine.match(/^[ \t]*/)[0].length > indent))
+          throw Error("This task now has nested content. Open the source note");
         parsed.segments.splice(current.segment, 2);
         return parsed.segments.join("");
       });
     });
   }
-  async changeTask(ref, kind, value) {
+  async changeTask(ref, kind, value, bound) {
     const file = ref.sourceFile;
     const path = file?.path ?? ref.path;
     let updated, before, after, saved;
     await this.updateDocument(path, raw => {
+      if (bound && !bound()) throw Error("The task source is no longer linked");
       if (raw === null || (file && this.vault.getAbstractFileByPath(path) !== file)) throw Error("Source note is missing");
       const parsed = parseTasks(raw, ref.path);
       const task = matchTask(parsed, ref) ?? (ref.snapshot === raw ? parsed.byId.get(ref.id) : null);
@@ -272,7 +280,7 @@ export class Notes {
     return [...modes];
   }
   async journalDays(cfg, days, visible = () => true) {
-    const result = new Set(),
+    const result = new Set(), requested = new Set(days),
       paths = new Map();
     for (const day of days) paths.set(this.journalPath(cfg, day), day);
     for (const [path, day] of paths) {
@@ -281,7 +289,7 @@ export class Notes {
       const raw = await this.readOptional(path);
       if (cfg.journalMode === "monthly") {
         for (const e of journalEntries(raw ?? "", day.slice(0, 7)).values())
-          if (e.written) result.add(e.date);
+          if (e.written && requested.has(e.date)) result.add(e.date);
       } else if (raw) {
         try { if (dailyDraft(raw).text.trim()) result.add(day); }
         catch { result.add(day); } // Keep the date accessible for repairs in the original note.

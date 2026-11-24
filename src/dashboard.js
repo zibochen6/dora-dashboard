@@ -16,7 +16,7 @@ const hasNote = (path, source) =>
     source.startsWith(path + "/"));
 function controlKey(node) {
   if (!node) return "";
-  const scope = ["widget", "card", "project"].map(key => node.closest("[data-" + key + "]")?.dataset[key] ?? "");
+  const scope = ["widget", "card", "project", "task"].map(key => node.closest("[data-" + key + "]")?.dataset[key] ?? "");
   const name = node.dataset.focus || node.getAttribute("aria-label") || node.title ||
     (node.matches("summary") ? node.textContent.split(" · ")[0] : node.textContent);
   return JSON.stringify([...scope, node.tagName, name]);
@@ -121,6 +121,7 @@ export class BoardView extends ItemView {
     const previous = this.viewport.firstElementChild;
     const samePage = previous && this.renderedPage === this.page;
     const doc = this.contentEl.ownerDocument;
+    const navHadFocus = previous?.querySelector(".dd-nav")?.contains(doc.activeElement);
     const root = this.contentEl.ownerDocument.createElement("div");
     root.className = "dd-app";
     const shell = el(root, "div", "", "dd-shell");
@@ -335,13 +336,16 @@ export class BoardView extends ItemView {
         if (expanded.has(controlKey(summary))) summary.parentElement.open = true;
       }
       if (this.inline?.isConnected && this.inlineTrigger) {
-        const triggerKey = controlKey(this.inlineTrigger);
-        const trigger = [...root.querySelectorAll("button")].find(node => controlKey(node) === triggerKey);
+        const trigger = [...root.querySelectorAll("button")].find(node => controlKey(node) === this.inlineTriggerKey);
         if (trigger) {
           trigger.parentElement.after(this.inline);
           this.inlineTrigger = trigger;
-          this.inlineConfig = cfg;
+          this.setInlineAvailable(true);
+        } else {
+          body.prepend(this.inline);
+          this.setInlineAvailable(false);
         }
+        this.inlineConfig = cfg;
       }
       this.viewport.replaceChildren(root);
       this.viewport.scrollTop = scrolled;
@@ -354,6 +358,10 @@ export class BoardView extends ItemView {
     if (added) {
       added.closest(".dd-project").scrollIntoView({ block: "nearest" });
       added.focus({ preventScroll: true });
+    } else if (!samePage && navHadFocus) {
+      nav.querySelector('[aria-current="page"]')?.focus({ preventScroll: true });
+    } else if (this.inline?.contains(active)) {
+      active.focus({ preventScroll: true });
     } else if (focus) {
       [...root.querySelectorAll("button, summary, select, input, textarea")].find(node => controlKey(node) === focus)?.focus({ preventScroll: true });
     }
@@ -372,8 +380,13 @@ export class BoardView extends ItemView {
   }
   taskRow(parent, task) {
     const row = el(parent, "div", "", "dd-task-row" + (task.done ? " is-done" : ""));
+    row.dataset.task = task.id;
+    const bound = () => {
+      const cfg = this.plugin.cfg, path = task.sourceFile?.path ?? task.path;
+      return resolveSources(cfg).inbox === path || cfg.projects.some(project => project.path === path);
+    };
     const change = async (kind, value, label) => {
-      const undo = await this.plugin.notes.changeTask(task, kind, value);
+      const undo = await this.plugin.notes.changeTask(task, kind, value, bound);
       this.plugin.feedback(label + " · " + task.label, undo);
       await this.refresh();
     };
@@ -383,27 +396,29 @@ export class BoardView extends ItemView {
     check.setAttribute("aria-pressed", String(task.done));
     check.dataset.focus = task.id;
     if (task.milestone) icon(row, "flag");
-    button(row, task.label, () => this.plugin.openNote(task.sourceFile?.path ?? task.path,
+    const open = button(row, task.label, () => this.plugin.openNote(task.sourceFile?.path ?? task.path,
       task.block ? "#^" + task.block : task.section ? "#" + task.section : ""), { cls: "dd-text" });
+    open.dataset.focus = "open";
     const selected = task.day === this.today;
     if (selected || !task.done) iconButton(row,
       selected ? this.t("Remove from today", "移出今天") : this.t("Plan for today", "安排到今天"),
       selected ? "calendar-check" : "calendar-plus",
       () => change("day", selected ? "" : this.today,
-        selected ? this.t("Removed from today", "已移出今天") : this.t("Planned for today", "已安排到今天")));
+        selected ? this.t("Removed from today", "已移出今天") : this.t("Planned for today", "已安排到今天"))).dataset.focus = "schedule";
     iconButton(row, this.t("Edit task", "编辑待办") + " · " + task.label, "pencil", event =>
       this.editInline(event.currentTarget, this.t("Task title", "待办标题"), task.titleMarkdown, async title => {
         if (title.trim() === task.titleMarkdown) return;
-        const undo = await this.plugin.notes.changeTask(task, "title", title);
+        const undo = await this.plugin.notes.changeTask(task, "title", title, bound);
         this.plugin.feedback(this.t("Renamed", "已改名") + " · " + title, undo);
-      }, JSON.stringify([task.path, task.id])));
+      }, JSON.stringify([task.path, task.id]), task.path)).dataset.focus = "rename";
   }
-  editInline(trigger, label, initial, submit, draftKey) {
+  editInline(trigger, label, initial, submit, draftKey, path) {
     if (this.inline?.isConnected) { this.inline.querySelector("input")?.focus(); return; }
     const form = el(trigger.parentElement, "form", "", "dd-inline");
     trigger.parentElement.after(form);
     this.inline = form;
     this.inlineTrigger = trigger;
+    this.inlineTriggerKey = controlKey(trigger);
     this.inlineConfig = this.plugin.cfg;
     const input = el(form, "input");
     input.required = true;
@@ -424,17 +439,29 @@ export class BoardView extends ItemView {
     button(form, this.t("Cancel", "取消"), () => { if (!saving) close(); });
     const error = el(form, "span", "", "dd-error");
     error.setAttribute("role", "alert");
+    let available = true;
+    const missing = this.t("This task or destination is no longer here. Your draft is still available.", "这条待办或写入位置已变化，你仍可复制草稿。");
+    const copy = button(form, this.t("Copy draft", "复制草稿"), async () => {
+      await input.ownerDocument.defaultView.navigator.clipboard.writeText(input.value);
+    });
+    copy.hidden = true;
+    this.setInlineAvailable = present => {
+      available = present;
+      save.disabled = saving || !present;
+      copy.hidden = present;
+      error.textContent = present ? "" : path + " · " + missing;
+    };
     form.onkeydown = event => {
       if (event.key === "Escape" && !event.isComposing && !saving) { event.preventDefault(); close(); }
     };
     form.onsubmit = async event => {
       event.preventDefault();
-      if (saving || !input.value.trim()) return;
+      if (saving || !available || !input.value.trim()) return;
       saving = true;
       save.disabled = true;
       try { await submit(input.value); close(); }
       catch (e) { error.textContent = this.plugin.errorText(e); }
-      finally { saving = false; save.disabled = false; }
+      finally { saving = false; save.disabled = !available; }
     };
     input.focus();
     if (initial) input.select();
@@ -447,7 +474,7 @@ export class BoardView extends ItemView {
       if (target !== path) throw Error(this.t("The destination changed. Copy your text before closing.", "写入位置已变化，请先复制输入的文字。"));
       const undo = await this.plugin.notes.addTask(path, title, day, milestone);
       this.plugin.feedback(this.t("Added", "已添加") + " · " + title, undo);
-    }, JSON.stringify([path, projectId, day, milestone]));
+    }, JSON.stringify([path, projectId, day, milestone]), path);
   }
   taskCard(card, groups) {
     for (const g of groups)
