@@ -23,16 +23,13 @@ export class JournalEditor extends Modal {
     status.setAttribute("role", "status");
     if (plugin.journalDrafts.has(key)) status.textContent = t("Draft restored", "已恢复草稿");
     const actions = el(body, "div", "", "dd-row");
-    const discard = button(actions, t("Discard draft", "放弃草稿"), () => {
-      if (this.saving) return;
-      plugin.journalDrafts.delete(key);
-      this.close();
-    });
+    let discard, confirmDiscard, keepEditing;
     const keepDraft = () => {
       const dirty = input.value !== opened.text;
       if (dirty) plugin.journalDrafts.set(key, { opened, text: input.value });
       else plugin.journalDrafts.delete(key);
       discard.hidden = !dirty;
+      confirmDiscard.hidden = keepEditing.hidden = true;
       confirm.hidden = true;
     };
     if (opened.file) button(actions, t("Open original note", "打开原文"), () => plugin.openNote(opened.file.path));
@@ -43,6 +40,22 @@ export class JournalEditor extends Modal {
       status.textContent = t("Draft copied", "已复制草稿");
     });
     copy.hidden = true;
+    discard = button(actions, t("Discard draft", "放弃草稿"), () => {
+      discard.hidden = true;
+      confirmDiscard.hidden = keepEditing.hidden = false;
+      keepEditing.focus();
+    }, { cls: "dd-link" });
+    confirmDiscard = button(actions, t("Confirm discard", "确认放弃草稿"), () => {
+      if (this.saving) return;
+      plugin.journalDrafts.delete(key);
+      this.close();
+    });
+    keepEditing = button(actions, t("Keep editing", "继续编辑"), () => {
+      discard.hidden = false;
+      confirmDiscard.hidden = keepEditing.hidden = true;
+      input.focus();
+    });
+    confirmDiscard.hidden = keepEditing.hidden = true;
     const row = el(body, "div", "", "dd-form-actions");
     button(row, t("Close", "关闭"), () => this.close());
     const save = el(row, "button", t("Save", "保存"), "mod-cta");

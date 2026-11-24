@@ -373,6 +373,8 @@ async function emptyCase() {
   assert.equal(await input.inputValue(),"A recovered line.");
   assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
   await click("Discard draft",diary);
+  assert.equal(await input.inputValue(),"A recovered line.");
+  await click("Confirm discard",diary);
   await diary.waitFor({state:"hidden"});
   await openDiary();
   await input.fill("");

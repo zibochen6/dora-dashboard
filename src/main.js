@@ -176,13 +176,11 @@ export default class DoraDashboard extends Plugin {
         next.root !== before.root
       )
         this.cancel("ai");
-      if (
-        !next.modules.weread ||
-        before.wereadSecret !== next.wereadSecret ||
-        before.root !== next.root ||
-        before.sources.highlights !== next.sources.highlights
-      )
+      if (before.modules.weread !== next.modules.weread || before.wereadSecret !== next.wereadSecret ||
+          before.root !== next.root || before.sources.highlights !== next.sources.highlights) {
         this.cancel("weread");
+        this.setBookState({ phase: "idle" });
+      }
       if (
         !next.modules.creator ||
         !next.modules.media ||
