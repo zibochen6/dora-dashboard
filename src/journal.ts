@@ -1,3 +1,4 @@
+import { TreeFragment, type SyntaxNode } from "@lezer/common";
 import { parser as markdown } from "@lezer/markdown";
 import { validDay } from "./model.ts";
 
@@ -22,78 +23,73 @@ export interface JournalDraft {
 
 function journalSections(raw: string, month: string, editingDay?: string): JournalSection[] {
   const lines = raw.split(/\r?\n/);
-  const offsets: number[] = [], positions: number[] = [], visible: string[] = [], syntax: string[] = [];
+  const offsets: number[] = [], positions: number[] = [], sourceLines: string[] = [];
   let offset = 0, position = 0;
   let properties = /^\uFEFF?---[ \t]*(?:\r?\n|$)/.test(raw);
-  let comment = "", fence = "";
-  // Obsidian's %% comments are outside CommonMark. Mask them without moving a
-  // character. Keep ordinary Markdown, including HTML blocks, for the parser.
-  function scan(line: string) {
-    const structure = line.split("");
-    let text = "", from = 0;
-    const markers = /<!--|%%|\x60+/g;
-    while (from < line.length) {
-      if (comment) {
-        const close = line.indexOf(comment, from);
-        const end = close < 0 ? line.length : close + comment.length;
-        if (comment === "%%") structure.fill(" ", from, end);
-        from = end;
-        if (close >= 0) comment = "";
-        continue;
-      }
-      markers.lastIndex = from;
-      const found = markers.exec(line);
-      if (!found) { text += line.slice(from); break; }
-      text += line.slice(from, found.index);
-      const marker = found[0];
-      from = markers.lastIndex;
-      if (marker.startsWith("\x60")) {
-        const close = line.slice(from).match(new RegExp("(?<!\\x60)\\x60{" + marker.length + "}(?!\\x60)"));
-        if (close) from += close.index! + marker.length;
-        text += line.slice(found.index, from);
-      } else if (/(?:^|[^\\])(?:\\\\)*\\$/.test(line.slice(0, found.index))) {
-        text += marker;
-      } else {
-        comment = marker === "%%" ? "%%" : "-->";
-        if (comment === "%%") structure.fill(" ", found.index, from);
-        text += " ";
-      }
-    }
-    return {source: structure.join(""), text};
-  }
   for (const [index, rawLine] of lines.entries()) {
-    const line = index === 0 ? rawLine.replace(/^\uFEFF/, "") : rawLine;
+    let line = index === 0 ? rawLine.replace(/^\uFEFF/, "") : rawLine;
     offsets.push(offset);
     positions.push(position);
     offset += rawLine.length;
     offset += raw.startsWith("\r\n", offset) ? 2 : raw.startsWith("\n", offset) ? 1 : 0;
-    let source = line, text = line;
     if (properties) {
-      source = text = "";
       if (index > 0 && /^(?:---|\.\.\.)[ \t]*$/.test(line)) properties = false;
-    } else {
-      const mark = line.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
-      if (fence) {
-        if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length && !mark[2].trim()) {
-          fence = ""; text = "";
-        }
-      } else if (!comment && mark) {
-        fence = mark[1]; text = "";
-      } else {
-        ({source, text} = scan(line));
-      }
+      line = "";
     }
-    syntax.push(source);
-    visible.push(text);
-    position += source.length + 1;
+    sourceLines.push(line);
+    position += line.length + 1;
   }
   offsets.push(raw.length);
   positions.push(position);
-  const tree = markdown.parse(syntax.join("\n"));
+  let source = sourceLines.join("\n");
+  let tree = markdown.parse(source);
+  let openBlock = properties;
+  // A literal %% in code or raw HTML cannot open an Obsidian comment.
+  // Reparse after each real comment: it can contain unmatched Markdown fences.
+  const literal = /^(?:FencedCode|CodeBlock|InlineCode|HTMLBlock|HTMLTag|CommentBlock|Comment|Autolink|URL|ProcessingInstruction|ProcessingInstructionBlock)$/;
+  for (let at = 0; (at = source.indexOf("%%", at)) >= 0;) {
+    let protectedUntil = at;
+    for (let node: SyntaxNode | null = tree.resolveInner(at, 1); node; node = node.parent) {
+      if (literal.test(node.name)) { protectedUntil = node.to; break; }
+      if (node.name === "Paragraph") {
+        let rawTag = "";
+        for (let child = node.firstChild; child && child.from < at; child = child.nextSibling) {
+          if (child.name !== "HTMLTag") continue;
+          const tag = source.slice(child.from,child.to).match(/^<(\/?)(code|pre|script|style|textarea)\b/i);
+          if (!tag) continue;
+          const name = tag[2].toLowerCase();
+          if (!rawTag && !tag[1]) rawTag = name;
+          else if (rawTag === name && tag[1]) rawTag = "";
+        }
+        if (rawTag) protectedUntil = at + 2;
+      }
+    }
+    if (protectedUntil > at) { at = protectedUntil; continue; }
+    let escapes = 0;
+    for (let before = at - 1; before >= 0 && source[before] === "\\"; before--) escapes++;
+    if (escapes % 2) { at += 2; continue; }
+    const close = source.indexOf("%%", at + 2);
+    const end = close < 0 ? source.length : close + 2;
+    openBlock ||= close < 0;
+    const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree),
+      [{fromA:at,toA:end,fromB:at,toB:end}]);
+    source = source.slice(0,at) + source.slice(at,end).replace(/[^\n]/g," ") + source.slice(end);
+    tree = markdown.parse(source,fragments);
+    at = end;
+  }
+  const visibleChars = source.split("");
+  tree.iterate({enter(node) {
+    if (node.name !== "Comment" && node.name !== "CommentBlock") return;
+    if (!source.slice(node.from,node.to).trimEnd().endsWith("-->")) openBlock = true;
+    for (let i = node.from; i < node.to; i++) {
+      if (visibleChars[i] !== "\n") visibleChars[i] = " ";
+    }
+    return false;
+  }});
+  const visible = visibleChars.join("").split("\n");
   const entries: JournalSection[] = [];
   let current: JournalSection | undefined;
   let level = 0, row = 0, firstBodyLine = 0;
-  let openBlock = false;
   const finish = (line: number) => {
     if (!current) return;
     current.bodyEnd = offsets[line];
@@ -134,7 +130,7 @@ function journalSections(raw: string, month: string, editingDay?: string): Journ
       finish(headingLine);
     }
   }
-  if (editingDay && (properties || openBlock || comment)) throw Error("Close the open properties, code block or comment in the original journal");
+  if (editingDay && openBlock) throw Error("Close the open properties, code block or comment in the original journal");
   finish(lines.length);
   return entries;
 }

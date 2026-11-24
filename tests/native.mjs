@@ -497,6 +497,20 @@ async function emptyCase() {
   await click("Save",newDay);
   await newDay.waitFor({state:"hidden"});
   assert.ok((await noteAt(archivePath)).startsWith(codeMonth));
+  const protectedDay = "### [[2026-11-23]]\r\nSecond.\r\n\r\n<pre>%%</pre>\r\n\r\nUnchanged.\n";
+  await page.evaluate(async ({id,archivePath,protectedDay}) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath(archivePath),"## 2026-11-22\nFirst.\n\n    %%\n\n" + protectedDay);
+    await app.plugins.plugins[id].editDiary("2026-11-22");
+  },{id,archivePath,protectedDay});
+  const oldDay = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}), "the real 22nd");
+  const journalText = oldDay.getByLabel("Journal entry");
+  assert.ok(!(await journalText.inputValue()).includes("Second."));
+  await journalText.fill("");
+  await click("Save",oldDay);
+  await click("Clear this day’s text",oldDay);
+  await oldDay.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).endsWith(protectedDay));
+  accepted("Literal comment delimiters in separate code blocks cannot hide or clear the next real day");
   accepted("Dates inside indented code and raw HTML stay literal when a real entry is created in the app");
   accepted("Clearing an annotated month leaves the linked next day byte-identical and the heatmap counts only requested dates");
   accepted(

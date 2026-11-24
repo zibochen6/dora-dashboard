@@ -125,6 +125,27 @@ test("only real document headings can create or replace monthly entries", () => 
   }
 });
 
+test("literal comment markers cannot hide a genuine next day", () => {
+  const formats = [
+    (s) => "    " + s,
+    (s) => "<pre>" + s + "</pre>",
+    (s) => "> ~~~\n> " + s + "\n> ~~~",
+    (s) => "- An item\n  ~~~\n  " + s + "\n  ~~~",
+    (s) => "Text \x60\x60line one\nliteral " + s + "\x60\x60 end.",
+    (s) => "Text with <code>" + s + "</code> here.",
+  ];
+  for (const literal of formats) for (const [open,close] of [["%%","%%"],["<!--","-->"]]) {
+    for (const heading of ["## 2026-11-23","### [[2026-11-23]]"]) {
+      const suffix = heading + "\n\nSecond day.\n\n" + literal(close) + "\n\nLast line.\n## 2026-11-24\nThird.\n";
+      const raw = "## 2026-11-22\n\nFirst day.\n\n" + literal(open) + "\n\n" + suffix;
+      const draft = journalDraft(raw,"2026-11-22");
+      assert.ok(!draft.text.includes("Second day."),raw);
+      assert.ok(writeJournalDraft(raw,draft,"").endsWith(suffix),raw);
+      assert.ok(journalDraft(raw,"2026-11-23").text.includes("Second day."),raw);
+    }
+  }
+});
+
 test("annotated, nested and Setext dates bound exactly one journal entry", () => {
   for (const heading of ["## 2026-11-23 <!-- Monday -->", "### 2026-11-23 %% Monday %%", "2026-11-23\r\n---", "### [[2026-11-23]]", "### **2026-11-23**", "### 📅 2026-11-23", "### [[Journal/2026-11-23|Monday]]"]) {
     const neighbor = heading + "\r\n\r\nKeep this entire day.\r\n## 2026-11-24\r\nThird.\r\n";
