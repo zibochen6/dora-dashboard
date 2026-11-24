@@ -170,6 +170,8 @@ async function boot(host, version = manifest.version) {
   const ctx = browser.contexts()[0];
   page = ctx.pages()[0] || (await ctx.waitForEvent("page"));
   page.setDefaultTimeout(12000);
+  if (linux) await page.bringToFront();
+  ctx.on("weberror", (event) => console.error("Desktop error:", event.error().message));
   await page.waitForFunction(
     () =>
       window.app?.workspace?.layoutReady &&
@@ -228,6 +230,17 @@ async function confirmTrust(button) {
   await navigation;
   await page.waitForFunction(() => window.app?.workspace?.layoutReady);
 }
+async function visibleControl(locate, description, timeout = 16000) {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    for (const candidate of browser.contexts().flatMap((context) => context.pages())) {
+      const control = locate(candidate);
+      if (await control.isVisible().catch(() => false)) return control;
+    }
+    await delay(100);
+  }
+  throw new Error("Obsidian did not show " + description);
+}
 function verifiedPid(pid, profile) {
   if (!pid || !profile?.startsWith(work + "/")) return false;
   try {
@@ -263,9 +276,10 @@ async function stop() {
 async function openBoard() {
   await page.evaluate(async (id) => {
     const p = app.plugins.plugins[id];
-    await p.update((cfg) => {
-      cfg.language = "en";
-    });
+    if (p.uiLanguage() !== "en")
+      await p.update((cfg) => {
+        cfg.language = "en";
+      });
     app.workspace.leftSplit.collapse();
     app.workspace.rightSplit.collapse();
     await p.openDashboard();
@@ -273,8 +287,7 @@ async function openBoard() {
   await page.locator(".dd-app").waitFor();
 }
 async function submit(fields, action = "Save") {
-  const modal = page.locator(".dd-modal");
-  await modal.waitFor();
+  const modal = await visibleControl((p) => p.locator(".dd-modal").last(), "the dashboard form");
   for (const [label, value] of Object.entries(fields))
     await modal.getByLabel(label, { exact: true }).fill(value);
   await click(action, modal);
@@ -897,18 +910,21 @@ async function storeCase() {
     app.setting.openTabById("community-plugins");
   });
   await openSettings();
-  const browse = page.getByRole("button", { name: /^(Browse|浏览)$/i });
-  const trust = page.getByRole("button", {
+  const browse = (p) => p.getByRole("button", { name: /^(Browse|浏览)$/i }).first();
+  const trust = (p) => p.getByRole("button", {
     name: /^(Trust author and enable plugins|Turn on community plugins|信任仓库作者并启用插件|启用第三方插件|开启第三方插件|关闭安全模式)$/i,
   }).first();
-  await browse.or(trust).first().waitFor();
-  if (await trust.isVisible()) {
-    await confirmTrust(trust);
+  const choice = await visibleControl((p) => browse(p).or(trust(p)).first(), "community plugin settings");
+  if (await trust(choice.page()).isVisible()) {
+    await confirmTrust(trust(choice.page()));
     await openSettings();
   }
-  await browse.click();
-  const dialog = page.locator(".modal").last();
-  const search = dialog.locator("input:visible:not([type=checkbox]):not([type=range])").first();
+  await (await visibleControl(browse, "Browse")).click();
+  const search = await visibleControl(
+    (p) => p.locator(".mod-community-modal input:visible, .community-modal input:visible, .community-modal-search input:visible, .modal:has(.community-item) input:visible").first(),
+    "the community search field",
+  );
+  const dialog = search.page().locator("body");
   await search.fill("Dataview");
   await dialog.getByText("Dataview", { exact: true }).first().waitFor({ timeout: 30000 });
   accepted("Native community search loaded a known listing in a new vault");
@@ -925,11 +941,11 @@ async function storeCase() {
     throw error;
   }
   await listing.click();
-  await page.getByRole("button", { name: /^(Install|安装)$/ }).click();
-  await page.getByRole("button", { name: /^(Enable|启用)$/ }).last().click({ timeout: 40000 });
+  await (await visibleControl((p) => p.getByRole("button", { name: /^(Install|安装)$/ }).last(), "Install")).click();
+  await (await visibleControl((p) => p.getByRole("button", { name: /^(Enable|启用)$/ }).last(), "Enable", 40000)).click();
   await page.waitForFunction((id) => !!app.plugins.plugins[id], id);
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Escape");
+  if (!search.page().isClosed()) await search.page().keyboard.press("Escape");
+  if (!choice.page().isClosed()) await choice.page().keyboard.press("Escape");
   await page.evaluate((id) => app.commands.executeCommandById(id + ":open"), id);
   await page.locator(".dd-app [data-card=tasks]").waitFor();
   const installed = JSON.parse(await readFile(join(host.plugin, "manifest.json"), "utf8"));
@@ -960,10 +976,13 @@ try {
   }
   succeeded = true;
 } catch (error) {
-  if (page && !page.isClosed()) {
-    // This renderer belongs to the disposable test vault checked in boot().
-    console.error("Desktop UI:", (await page.locator("body").innerText().catch(() => "")).slice(-3200));
-    await page.screenshot({ path: join(output, "failure.png"), timeout: 3000 }).catch(() => {});
+  // All these windows belong to the disposable profile checked in boot().
+  for (const [index, view] of (browser?.contexts().flatMap((c) => c.pages()) ?? []).entries()) {
+    if (view.isClosed()) continue;
+    console.error("Desktop UI:", await view.title(), (await view.locator("body").innerText().catch(() => "")).slice(-2000));
+    console.error("Visible inputs:", await view.locator("input:visible").evaluateAll((els) =>
+      els.map((el) => [el.type, el.placeholder, el.className, el.parentElement.className])).catch(() => []));
+    await view.screenshot({ path: join(output, "failure-" + index + ".png"), timeout: 3000 }).catch(() => {});
   }
   throw error;
 } finally {

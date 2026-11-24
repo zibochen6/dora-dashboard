@@ -34,13 +34,13 @@ jobs:
             https://github.com/obsidianmd/obsidian-releases/releases/download/v1.15.1/obsidian_1.15.1_amd64.deb -o "$package"
           echo "f77b6dfc8c040214f2febad2b1b9b051b6a838a47b0f4fb90a31cfcb79b8fcec  $package" | sha256sum -c -
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends "$package" xvfb xauth
+          sudo apt-get install -y --no-install-recommends "$package" xvfb xauth openbox
       - name: Test the release in isolated vaults
         if: matrix.check == 'release'
-        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' npm run test:native
+        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' sh -ec 'openbox >/dev/null 2>&1 & exec npm run test:native'
       - name: Search, install and enable in the community directory
         if: matrix.check == 'directory'
-        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' npm run test:native -- store
+        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' sh -ec 'openbox >/dev/null 2>&1 & exec npm run test:native -- store'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
