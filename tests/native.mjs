@@ -88,6 +88,7 @@ async function makeHost(name, preinstall = true) {
   await put(
     join(profile, "obsidian.json"),
     JSON.stringify({
+      updateDisabled: true,
       vaults: { [key]: { path: vault, ts: Date.now(), open: true } },
     }),
   );
@@ -208,12 +209,24 @@ async function boot(host, version = manifest.version) {
   const trust = page.getByRole("button", {
     name: /^(Trust author and enable plugins|信任仓库作者并启用插件)$/,
   });
-  if (await trust.isVisible()) await trust.click();
-  await page.waitForFunction((id) => !!app.plugins.plugins[id], id, {
+  if (await trust.isVisible()) await confirmTrust(trust);
+  await page.waitForFunction((id) => window.app?.workspace?.layoutReady && !!app.plugins.plugins[id], id, {
     timeout: 30000,
   });
   await ctx.setOffline(true);
   return ctx;
+}
+async function confirmTrust(button) {
+  // The desktop client can reload the vault after the user accepts.
+  const navigation = page.waitForNavigation({
+    waitUntil: "domcontentloaded",
+    timeout: 5000,
+  }).catch((error) => {
+    if (error.name !== "TimeoutError") throw error;
+  });
+  await button.click();
+  await navigation;
+  await page.waitForFunction(() => window.app?.workspace?.layoutReady);
 }
 function verifiedPid(pid, profile) {
   if (!pid || !profile?.startsWith(work + "/")) return false;
@@ -879,15 +892,21 @@ async function upgradeCase() {
 async function storeCase() {
   const host = await makeHost("Community directory", false);
   await boot(host, null);
-  await page.evaluate(() => {
+  const openSettings = () => page.evaluate(() => {
     app.setting.open();
     app.setting.openTabById("community-plugins");
   });
+  await openSettings();
+  const browse = page.getByRole("button", { name: /^(Browse|浏览)$/i });
   const trust = page.getByRole("button", {
     name: /^(Trust author and enable plugins|Turn on community plugins|信任仓库作者并启用插件|启用第三方插件|开启第三方插件|关闭安全模式)$/i,
   }).first();
-  if (await trust.isVisible()) await trust.click();
-  await page.getByRole("button", { name: /^(Browse|浏览)$/i }).click();
+  await browse.or(trust).first().waitFor();
+  if (await trust.isVisible()) {
+    await confirmTrust(trust);
+    await openSettings();
+  }
+  await browse.click();
   const dialog = page.locator(".modal").last();
   const search = dialog.locator("input:visible:not([type=checkbox]):not([type=range])").first();
   await search.fill("Dataview");
@@ -940,6 +959,13 @@ try {
     await cases[key]();
   }
   succeeded = true;
+} catch (error) {
+  if (page && !page.isClosed()) {
+    // This renderer belongs to the disposable test vault checked in boot().
+    console.error("Desktop UI:", (await page.locator("body").innerText().catch(() => "")).slice(-3200));
+    await page.screenshot({ path: join(output, "failure.png"), timeout: 3000 }).catch(() => {});
+  }
+  throw error;
 } finally {
   try {
     await stop();
