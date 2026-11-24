@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { configFrom, renamed } from "../src/config.js";
 import { parseTasks, changeCheckbox, matchTask } from "../src/model.ts";
 import {
+  dailyDraft, writeDailyBody,
   journalDraft,
   writeJournalDraft,
   journalEntries,
@@ -24,7 +25,7 @@ test("empty install, opt-in modules and incremental settings migrations", () => 
   const migrated = configFrom(old);
   assert.deepEqual(migrated.visible, old.cards);
   assert.equal(migrated.nickname, "River");
-  assert.equal(migrated.version, 1);
+  assert.equal(migrated.version, 2);
   assert.equal(migrated.root, old.root);
   assert.deepEqual(configFrom(migrated), migrated);
   assert.throws(() => configFrom({ version: 7 }), /Unsupported/);
@@ -82,4 +83,21 @@ test("monthly journal replaces one section, retains neighbors and rejects stale 
   assert.ok(next.includes("## 2026-03-02\r\n\r\nSecond.\r\n"));
   assert.equal(journalEntries(next, "2026-03").size, 2);
   assert.throws(() => writeJournalDraft(next, draft, "Concurrent overwrite"));
+});
+
+test("daily editor preserves properties, BOM and line endings, including an untouched file", () => {
+  const prefix = "\uFEFF---\r\ntitle: River\r\n---\r\n";
+  const raw = prefix + "# Heading\r\nA sentence.\r\n";
+  assert.equal(dailyDraft(raw).text, "# Heading\nA sentence.\n");
+  assert.equal(writeDailyBody(raw, dailyDraft(raw).text), raw);
+  assert.equal(writeDailyBody(raw, "Two\nlines.\n"), prefix + "Two\r\nlines.\r\n");
+  assert.equal(writeDailyBody(raw, ""), prefix);
+  assert.equal(writeDailyBody("---\ntags: []\n---", "Hello"), "---\ntags: []\n---\nHello");
+  assert.throws(() => dailyDraft("---\nbroken: true\n"), /properties/);
+});
+test("migrate a legacy goal once and keep each currency independent", () => {
+  const cfg = configFrom({version:1, currency:"USD", financeGoal:"1200.00"});
+  assert.deepEqual(cfg.financeGoals, {USD:"1200.00"});
+  cfg.currency="CNY"; cfg.financeGoals.CNY="90.00";
+  assert.deepEqual(configFrom(cfg).financeGoals, {CNY:"90.00", USD:"1200.00"});
 });

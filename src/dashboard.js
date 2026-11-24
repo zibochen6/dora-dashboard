@@ -14,6 +14,14 @@ const hasNote = (path, source) =>
     path === source ||
     path.startsWith(source + "/") ||
     source.startsWith(path + "/"));
+function controlKey(node) {
+  if (!node) return "";
+  const scope = ["widget", "card", "project"].map(key => node.closest("[data-" + key + "]")?.dataset[key] ?? "");
+  const name = node.dataset.focus || node.getAttribute("aria-label") || node.title ||
+    (node.matches("summary") ? node.textContent.split(" · ")[0] : node.textContent);
+  return JSON.stringify([...scope, node.tagName, name]);
+}
+
 export class BoardView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -81,6 +89,7 @@ export class BoardView extends ItemView {
   }
   async refresh() {
     if (this.closed) return;
+    if (this.inline?.isConnected && this.renderedPage === this.page && this.renderedConfig === this.plugin.cfg) return;
     const revision = ++this.revision;
     this.drain();
     const cfg = this.plugin.cfg;
@@ -94,8 +103,9 @@ export class BoardView extends ItemView {
     for (const page of cfg.pages)
       navs.push([page.id, page.title, "panels-top-left"]);
     if (!navs.some(([key]) => key === this.page)) this.page = "home";
-    const focus = this.contentEl.ownerDocument.activeElement?.dataset?.focus;
-    const scrolled = this.contentEl.scrollTop;
+    const previous = this.contentEl.firstElementChild;
+    const samePage = previous && this.renderedPage === this.page;
+    const doc = this.contentEl.ownerDocument;
     const root = this.contentEl.ownerDocument.createElement("div");
     root.className = "dd-app";
     const shell = el(root, "div", "", "dd-shell");
@@ -154,8 +164,9 @@ export class BoardView extends ItemView {
       el(title, "span", navs.find(([k]) => k === this.page)[1], "dd-marker");
     const body = el(content, "div", "", "dd-content");
     // Mount immediately so that a slow source never holds the rest of the page hostage.
-    this.contentEl.replaceChildren(root);
-    this.contentEl.scrollTop = scrolled;
+    if (!samePage) this.contentEl.replaceChildren(root);
+    this.renderedPage = this.page;
+    this.renderedConfig = cfg;
     const src = resolveSources(cfg);
     const watch = (...paths) =>
       paths.filter(Boolean).forEach((p) => this.watched.add(p));
@@ -232,7 +243,7 @@ export class BoardView extends ItemView {
         );
       if (cfg.modules.ai) {
         watch(cfg.root + "/Reflections");
-        const a = el(body, "section", "", "dd-card");
+        const a = el(body, "div");
         render(a, () => reflectionPanel(this, a));
       }
     } else if (this.page === "creator") {
@@ -251,8 +262,9 @@ export class BoardView extends ItemView {
       let shared;
       const get = () => (shared ??= tasks());
       const page = cfg.pages.find((p) => p.id === this.page);
-      for (const w of page?.widgets ?? []) {
+      for (const [i, w] of (page?.widgets ?? []).entries()) {
         const card = el(body, "section", "", "dd-card");
+        card.dataset.widget = page.id + "-" + i;
         if (w.kind === "note") {
           button(card, titleOf(w.path), () => this.plugin.openNote(w.path), {
             icon: "file-text",
@@ -274,13 +286,14 @@ export class BoardView extends ItemView {
             g.tasks.filter((x) => x.milestone),
           );
           for (const task of milestones) this.taskRow(card, task);
+          button(card, this.t("Add milestone", "添加里程碑"), e => this.addTask(e.currentTarget, src.inbox, "", true), { icon: "flag" });
           if (!milestones.length)
             el(
               card,
               "p",
               this.t(
-                "Add a milestone to a project.",
-                "在项目中添加第一个里程碑。",
+                "No milestones yet.",
+                "还没有里程碑。",
               ),
               "dd-muted",
             );
@@ -293,6 +306,20 @@ export class BoardView extends ItemView {
     }
     await Promise.all(guards);
     if (revision !== this.revision) return;
+    if (samePage && this.inline?.isConnected && this.inline.closest(".dd-app") === previous && this.inlineConfig === cfg) return;
+    this.plugin.feedbackBar(body, () => this.refresh());
+    const active = doc.activeElement;
+    const inside = previous?.contains(active);
+    const focus = inside ? controlKey(active) : "";
+    const scrolled = this.contentEl.scrollTop;
+    if (samePage) {
+      const expanded = new Set([...previous.querySelectorAll("details[open] > summary")].map(controlKey));
+      for (const summary of root.querySelectorAll("details > summary")) {
+        if (expanded.has(controlKey(summary))) summary.parentElement.open = true;
+      }
+      this.contentEl.replaceChildren(root);
+      this.contentEl.scrollTop = scrolled;
+    }
     const projectToFocus = this.focusProject;
     this.focusProject = null;
     const added = projectToFocus && this.contentEl.querySelector(
@@ -301,10 +328,9 @@ export class BoardView extends ItemView {
     if (added) {
       added.closest(".dd-project").scrollIntoView({ block: "nearest" });
       added.focus({ preventScroll: true });
-    } else if (focus)
-      this.contentEl
-        .querySelector('[data-focus="' + CSS.escape(focus) + '"]')
-        ?.focus({ preventScroll: true });
+    } else if (focus) {
+      [...root.querySelectorAll("button, summary, select, input, textarea")].find(node => controlKey(node) === focus)?.focus({ preventScroll: true });
+    }
   }
   card(parent, key) {
     const card = el(parent, "section", "", "dd-card dd-" + key);
@@ -318,85 +344,77 @@ export class BoardView extends ItemView {
     el(head, "h2", this.t(...cards[key]));
     return card;
   }
-  taskRow(parent, task, allowSchedule = false, editable = false) {
-    const r = el(
-      parent,
-      "div",
-      "",
-      "dd-task-row" + (task.done ? " is-done" : ""),
-    );
-    const check = iconButton(
-      r,
-      this.t("Toggle task", "切换完成状态") + " · " + task.label,
-      task.done ? "circle-check" : "circle",
-      async () => {
-        await this.plugin.notes.changeTask(task, "done", !task.done);
-        this.undo = { ...task, done: !task.done };
-        await this.refresh();
-      },
-    );
+  taskRow(parent, task) {
+    const row = el(parent, "div", "", "dd-task-row" + (task.done ? " is-done" : ""));
+    const change = async (kind, value, label) => {
+      const undo = await this.plugin.notes.changeTask(task, kind, value);
+      this.plugin.feedback(label + " · " + task.label, undo);
+      await this.refresh();
+    };
+    const check = iconButton(row, this.t("Toggle task", "切换完成状态") + " · " + task.label,
+      task.done ? "circle-check" : "circle", () => change("done", !task.done,
+        task.done ? this.t("Reopened", "已恢复待办") : this.t("Completed", "已完成")));
     check.setAttribute("aria-pressed", String(task.done));
     check.dataset.focus = task.id;
-    button(
-      r,
-      task.label,
-      () =>
-        this.plugin.openNote(
-          task.path,
-          task.block
-            ? "#^" + task.block
-            : task.section
-              ? "#" + task.section
-              : "",
-        ),
-      { cls: "dd-text" },
-    );
-    if (allowSchedule) {
-      const selected = task.day === this.today;
-      iconButton(
-        r,
-        selected
-          ? this.t("Remove from today", "移出今天")
-          : this.t("Plan for today", "安排到今天"),
-        selected ? "calendar-check" : "calendar-plus",
-        async () => {
-          await this.plugin.notes.changeTask(
-            task,
-            "day",
-            selected ? "" : this.today,
-          );
-          await this.refresh();
-        },
-      );
-    }
-    if (editable && !task.milestone) {
-      const edit = this.t("Edit task", "编辑待办");
-      iconButton(r, edit + " · " + task.label, "pencil", () => form(
-        this.plugin,
-        edit,
-        [{ key: "name", label: this.t("Task title", "待办标题"), required: true, value: task.titleMarkdown }],
-        async ({name}) => {
-          const updated = await this.plugin.notes.renameTask(task, name);
-          if (this.undo?.path === task.path && this.undo.id === task.id)
-            this.undo = updated;
-          await this.refresh();
-        },
-      ));
-    }
+    if (task.milestone) icon(row, "flag");
+    button(row, task.label, () => this.plugin.openNote(task.sourceFile?.path ?? task.path,
+      task.block ? "#^" + task.block : task.section ? "#" + task.section : ""), { cls: "dd-text" });
+    const selected = task.day === this.today;
+    if (selected || !task.done) iconButton(row,
+      selected ? this.t("Remove from today", "移出今天") : this.t("Plan for today", "安排到今天"),
+      selected ? "calendar-check" : "calendar-plus",
+      () => change("day", selected ? "" : this.today,
+        selected ? this.t("Removed from today", "已移出今天") : this.t("Planned for today", "已安排到今天")));
+    iconButton(row, this.t("Edit task", "编辑待办") + " · " + task.label, "pencil", event =>
+      this.editInline(event.currentTarget, this.t("Task title", "待办标题"), task.titleMarkdown, async title => {
+        if (title.trim() === task.titleMarkdown) return;
+        const undo = await this.plugin.notes.changeTask(task, "title", title);
+        this.plugin.feedback(this.t("Renamed", "已改名") + " · " + title, undo);
+      }));
   }
-  addTask(path, day = "", milestone = false) {
-    const label = milestone
-      ? this.t("Add milestone", "添加里程碑")
-      : this.t("Add task", "添加待办");
-    form(
-      this.plugin,
-      label,
-      [{ key: "name", label: this.t("Title", "名称"), required: true }],
-      async (v) => {
-        await this.plugin.notes.addTask(path, v.name, day, milestone);
-        await this.refresh();
-      },
-    );
+  editInline(trigger, label, initial, submit) {
+    if (this.inline?.isConnected) { this.inline.querySelector("input")?.focus(); return; }
+    const form = el(trigger.parentElement, "form", "", "dd-inline");
+    trigger.parentElement.after(form);
+    this.inline = form;
+    this.inlineConfig = this.plugin.cfg;
+    const input = el(form, "input");
+    input.required = true;
+    input.placeholder = label;
+    input.setAttribute("aria-label", label);
+    input.value = initial;
+    const save = el(form, "button", this.t("Save", "保存"), "mod-cta");
+    save.type = "submit";
+    let saving = false;
+    const close = () => {
+      if (this.inline === form) this.inline = null;
+      form.remove();
+      if (trigger.isConnected) trigger.focus({ preventScroll: true });
+      this.schedule();
+    };
+    button(form, this.t("Cancel", "取消"), () => { if (!saving) close(); });
+    const error = el(form, "span", "", "dd-error");
+    error.setAttribute("role", "alert");
+    form.onkeydown = event => {
+      if (event.key === "Escape" && !event.isComposing && !saving) { event.preventDefault(); close(); }
+    };
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (saving || !input.value.trim()) return;
+      saving = true;
+      save.disabled = true;
+      try { await submit(input.value); close(); }
+      catch (e) { error.textContent = this.plugin.errorText(e); }
+      finally { saving = false; save.disabled = false; }
+    };
+    input.focus();
+    if (initial) input.select();
+  }
+  addTask(trigger, path, day = "", milestone = false) {
+    this.editInline(trigger, this.t("Title", "名称"), "", async title => {
+      const undo = await this.plugin.notes.addTask(path, title, day, milestone);
+      this.plugin.feedback(this.t("Added", "已添加") + " · " + title, undo);
+    });
   }
   taskCard(card, groups) {
     for (const g of groups)
@@ -416,10 +434,10 @@ export class BoardView extends ItemView {
     const inbox = resolveSources(this.plugin.cfg).inbox;
     button(
       surface,
-      list.length
+      rows.length
         ? this.t("Add task", "添加待办")
         : this.t("Write your first task", "记第一条待办"),
-      () => this.addTask(inbox, this.today),
+      event => this.addTask(event.currentTarget, inbox, this.today),
       { icon: "plus", cls: "dd-link" },
     );
     const unscheduled = rows.filter((t) => t.day !== this.today && !t.done);
@@ -432,20 +450,7 @@ export class BoardView extends ItemView {
           " · " +
           unscheduled.length,
       );
-      for (const task of unscheduled) this.taskRow(more, task, true);
-    }
-    if (this.undo) {
-      const previous = this.undo;
-      button(
-        card,
-        this.t("Undo last change", "撤销上次勾选"),
-        async () => {
-          await this.plugin.notes.changeTask(previous, "done", !previous.done);
-          this.undo = null;
-          await this.refresh();
-        },
-        { icon: "undo-2", cls: "dd-link" },
-      );
+      for (const task of unscheduled) this.taskRow(more, task);
     }
   }
   projectsCard(card, groups, study = false) {
@@ -496,7 +501,7 @@ export class BoardView extends ItemView {
           ]
         : tasks;
       const preview = group.slice(0, 4);
-      for (const item of preview) this.taskRow(box, item, true, true);
+      for (const item of preview) this.taskRow(box, item);
       if (group.length > 4) {
         const rest = el(box, "details");
         el(
@@ -504,19 +509,27 @@ export class BoardView extends ItemView {
           "summary",
           this.t("More tasks", "更多待办") + " · " + (group.length - 4),
         );
-        for (const item of group.slice(4)) this.taskRow(rest, item, true, true);
+        for (const item of group.slice(4)) this.taskRow(rest, item);
+      }
+      if (study) {
+        const remaining = tasks.filter(task => !task.done && !task.milestone).slice(1);
+        if (remaining.length) {
+          const more = el(box, "details");
+          el(more, "summary", this.t("Remaining tasks", "其余待办") + " · " + remaining.length);
+          for (const task of remaining) this.taskRow(more, task);
+        }
       }
       const actions = el(box, "div", "", "dd-row");
       button(
         actions,
         this.t("Add task", "添加待办"),
-        () => this.addTask(project.path),
+        event => this.addTask(event.currentTarget, project.path),
         { icon: "plus", cls: "dd-add-project-task" },
       );
       button(
         actions,
         this.t("Milestone", "里程碑"),
-        () => this.addTask(project.path, "", true),
+        event => this.addTask(event.currentTarget, project.path, "", true),
         { icon: "flag" },
       );
     }
@@ -529,17 +542,16 @@ export class BoardView extends ItemView {
     const dow = new Date().getDay();
     for (const [i, h] of data.items.entries()) {
       if (!h.days.includes(dow)) continue;
-      const done = h.checks.includes(this.today);
+      const day = this.today;
+      const done = h.checks.includes(day);
       const b = button(
         tiles,
         h.name,
         async () => {
           await p.notes.editHabits(cfg.root, (d) => {
             const item = d.items.find((x) => x.id === h.id);
-            if (!item) throw Error("Habit changed");
-            item.checks = done
-              ? item.checks.filter((date) => date !== this.today)
-              : [...new Set([...item.checks, this.today])];
+            if (!item || item.checks.includes(day) !== done) throw Error(this.t("Habit changed", "习惯已变化"));
+            item.checks = done ? item.checks.filter(date => date !== day) : [...item.checks, day];
           });
           await this.refresh();
         },
@@ -550,9 +562,7 @@ export class BoardView extends ItemView {
       el(
         b,
         "small",
-        h.checks.length +
-          " " +
-          this.t(h.checks.length === 1 ? "day" : "days", "天"),
+        this.t("Total", "累计") + " " + h.checks.length + " " + this.t(h.checks.length === 1 ? "day" : "days", "天"),
       );
     }
     const tools = el(card, "div", "", "dd-row");
@@ -582,12 +592,28 @@ export class BoardView extends ItemView {
     const p = this.plugin,
       cfg = p.cfg,
       days = recentDays(15 * 7),
-      written = await p.notes.journalDays(cfg, days);
+      written = await p.notes.journalDays(cfg, days, () => !this.closed && this.page === "home" && p.cfg.visible.includes("journal") && p.cfg.root === cfg.root && p.cfg.sources.journal === cfg.sources.journal && p.cfg.journalMode === cfg.journalMode);
     const grid = el(card, "div", "", "dd-heatmap");
     grid.setAttribute("aria-label", this.t("Last 15 weeks", "近 15 周"));
-    for (const day of days) {
+    const activeDay = days.includes(this.heatDay) ? this.heatDay : days.at(-1);
+    for (const [index, day] of days.entries()) {
       const cell = el(grid, "button", "", "dd-cell");
       cell.type = "button";
+      cell.tabIndex = day === activeDay ? 0 : -1;
+      cell.dataset.focus = "journal-" + day;
+      cell.onfocus = () => {
+        const last = grid.querySelector('[tabindex="0"]');
+        if (last) last.tabIndex = -1;
+        this.heatDay = day;
+        cell.tabIndex = 0;
+      };
+      cell.onkeydown = e => {
+        const target = { ArrowUp: index - 1, ArrowDown: index + 1, ArrowLeft: index - 7,
+          ArrowRight: index + 7, Home: 0, End: days.length - 1 }[e.key];
+        if (target === undefined) return;
+        e.preventDefault();
+        grid.children[Math.max(0, Math.min(days.length - 1, target))]?.focus();
+      };
       cell.dataset.written = String(written.has(day));
       cell.title = day;
       cell.setAttribute(
@@ -617,11 +643,11 @@ export class BoardView extends ItemView {
       () => p.editDiary(this.today),
       { icon: "pen-line" },
     );
-    if (!cfg.sources.journal)
+    if (!cfg.sources.journal && !written.size)
       button(
         tools,
         this.t("Choose folder", "选择日记目录"),
-        () => p.openSettings("sources"),
+        () => p.chooseSource("journal"),
         { cls: "dd-link" },
       );
   }
@@ -634,10 +660,11 @@ export class BoardView extends ItemView {
       );
     if (this.closed || revision !== this.revision) return;
     if (!rows.length) {
+      if (p.cfg.sources[key]) el(card, "p", this.t("No entries in this source yet.", "这个来源还没有可展示的内容。"), "dd-muted");
       button(
         card,
-        this.t("Choose reading source", "选择摘录来源"),
-        () => p.openSettings("sources"),
+        key === "thoughts" ? this.t("Choose thought note or folder", "选择想法笔记或目录") : this.t("Choose highlight note or folder", "选择划线笔记或目录"),
+        () => p.chooseSource(key),
         { icon: "folder-open" },
       );
       return;
@@ -668,6 +695,7 @@ export class BoardView extends ItemView {
       { cls: "dd-source" },
     );
     const wrap = el(tools, "div", "", "dd-row");
+    wrap.hidden = rows.length < 2;
     const prev = iconButton(
       wrap,
       this.t("Previous excerpt", "上一条"),

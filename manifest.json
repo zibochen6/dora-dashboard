@@ -1,7 +1,7 @@
 {
   "id": "dora-dashboard",
   "name": "Dora Dashboard",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "minAppVersion": "1.11.5",
   "description": "Organize daily tasks, projects, habits, journals, and reading in a customizable local dashboard.",
   "author": "Dora",

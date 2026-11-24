@@ -15,7 +15,7 @@ import {
   readDocumentJson,
   replaceBlock,
 } from "./documents.ts";
-import { journalDraft, writeJournalDraft, journalEntries } from "./journal.ts";
+import { dailyDraft, writeDailyBody, journalDraft, writeJournalDraft, journalEntries } from "./journal.ts";
 
 export function titleOf(path) {
   return path.split("/").at(-1).replace(/\.md$/i, "");
@@ -140,6 +140,7 @@ export class Notes {
       .replace(/[<>]/g, (c) => (c === "<" ? "‹" : "›"));
     if (!label) throw Error("Enter a task");
     const id = "dora-" + uniqueId();
+    let before, after, appended, file;
     return this.updateDocument(path, (raw) => {
       const text = raw ?? "",
         eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -155,56 +156,59 @@ export class Notes {
         eol;
       if (!parseTasks(next, path).ordered.some((row) => row.block === id))
         throw Error("Close the code block or comment at the end of this note");
+      before = text;
+      after = next;
+      appended = parseTasks(next, path).ordered.find(row => row.block === id);
       return next;
+    }).then(() => {
+      file = this.vault.getAbstractFileByPath(path);
+      const line = parseTasks(after, path).segments[appended.segment];
+      return () => this.updateDocument(file?.path ?? path, raw => {
+        if (!file || this.vault.getAbstractFileByPath(file.path) !== file || raw === null)
+          throw Error("Source note is missing");
+        if (raw === after) return before;
+        const parsed = parseTasks(raw, path);
+        const current = matchTask(parsed, appended);
+        if (!current || parsed.segments[current.segment] !== line) throw Error("Task changed. Reopen the source note");
+        parsed.segments.splice(current.segment, 2);
+        return parsed.segments.join("");
+      });
     });
   }
-  changeTask(ref, kind, value) {
-    const currentPath = ref.sourceFile?.path ?? ref.path;
-    return this.updateDocument(currentPath, (raw) => {
-      if (
-        ref.sourceFile &&
-        this.vault.getAbstractFileByPath(currentPath) !== ref.sourceFile
-      )
-        throw Error("Source note is missing");
-      if (raw === null) throw Error("Source note is missing");
-      const parsed = parseTasks(raw, ref.path),
-        task =
-          matchTask(parsed, ref) ??
-          (ref.snapshot === raw ? parsed.byId.get(ref.id) : null);
-      if (!task || task.done !== ref.done)
-        throw Error("Task changed. Reopen the source note");
-      if (kind === "done") return changeCheckbox(parsed, task, value);
-      const line = parsed.segments[task.segment];
-      const prev = line.match(/<!-- dora-day:([\d-]+) -->/)?.[1] ?? "";
-      if (prev !== ref.day) throw Error("Task changed. Reopen the source note");
-      const block = task.block || "dora-" + uniqueId();
-      parsed.segments[task.segment] =
-        line
-          .replace(/\s*\^[\w-]+\s*$/, "")
-          .replace(/\s*<!-- dora-day:[\d-]+ -->/g, "")
-          .trimEnd() +
-        (value ? " <!-- dora-day:" + value + " -->" : "") +
-        " ^" +
-        block;
+  async changeTask(ref, kind, value) {
+    const file = ref.sourceFile;
+    const path = file?.path ?? ref.path;
+    let updated, before, after, saved;
+    await this.updateDocument(path, raw => {
+      if (raw === null || (file && this.vault.getAbstractFileByPath(path) !== file)) throw Error("Source note is missing");
+      const parsed = parseTasks(raw, ref.path);
+      const task = matchTask(parsed, ref) ?? (ref.snapshot === raw ? parsed.byId.get(ref.id) : null);
+      if (!task || task.done !== ref.done || task.titleMarkdown !== ref.titleMarkdown) throw Error("Task changed. Reopen the source note");
+      before = parsed.segments[task.segment];
+      const day = before.match(/<!-- dora-day:([\d-]+) -->/)?.[1] ?? "";
+      if (kind === "done") saved = changeCheckbox(parsed, task, value);
+      else if (kind === "title") saved = renameTaskLine(parsed, task, value, task.block || "dora-" + uniqueId()).text;
+      else {
+        if (day !== ref.day) throw Error("Task changed. Reopen the source note");
+        const block = task.block || "dora-" + uniqueId();
+        parsed.segments[task.segment] = before.replace(/\s*\^[\w-]+\s*$/, "")
+          .replace(/\s*<!-- dora-day:[\d-]+ -->/g, "").trimEnd() +
+          (value ? " <!-- dora-day:" + value + " -->" : "") + " ^" + block;
+        saved = parsed.segments.join("");
+      }
+      const result = parseTasks(saved, ref.path);
+      updated = result.ordered.find(row => row.segment === task.segment);
+      after = result.segments[task.segment];
+      return saved;
+    });
+    return () => this.updateDocument(file?.path ?? path, raw => {
+      if (raw === null || (file && this.vault.getAbstractFileByPath(file.path) !== file)) throw Error("Source note is missing");
+      const parsed = parseTasks(raw, ref.path);
+      const current = matchTask(parsed, updated) ?? (raw === saved ? parsed.byId.get(updated.id) : null);
+      if (!current || parsed.segments[current.segment] !== after) throw Error("Task changed. Reopen the source note");
+      parsed.segments[current.segment] = before;
       return parsed.segments.join("");
     });
-  }
-  async renameTask(ref, title) {
-    const path = ref.sourceFile?.path ?? ref.path;
-    let updated;
-    await this.updateDocument(path, (raw) => {
-      if (raw === null || (ref.sourceFile && this.vault.getAbstractFileByPath(path) !== ref.sourceFile))
-        throw Error("Source note is missing");
-      const parsed = parseTasks(raw, ref.path);
-      const task = matchTask(parsed, ref);
-      if (!task || task.identity !== ref.identity || task.done !== ref.done)
-        throw Error("Task changed. Reopen the source note");
-      if (task.titleMarkdown === title.trim()) return raw;
-      const result = renameTaskLine(parsed, task, title, task.block || "dora-" + uniqueId());
-      updated = { ...ref, ...result.task, path };
-      return result.text;
-    });
-    return updated ?? ref;
   }
   async habits(root) {
     const raw = await this.readOptional(join(root, "Habits.md"));
@@ -238,31 +242,47 @@ export class Notes {
       path,
       original,
       draft,
-      text: draft ? draft.text : (original ?? ""),
+      text: draft ? draft.text : dailyDraft(original ?? "").text,
+      file: this.vault.getAbstractFileByPath(path),
     };
   }
-  saveDiary(opened, text) {
-    if (!text.trim() && opened.original === null) return Promise.resolve();
+  saveDiary(opened, text, allowClear = false) {
+    if (text === opened.text || (!text.trim() && opened.original === null)) return Promise.resolve();
+    if (opened.text.trim() && !text.trim() && !allowClear) throw Error("Confirm clearing this entry");
     return this.updateDocument(opened.path, (raw) => {
-      if (opened.draft) return writeJournalDraft(raw ?? "", opened.draft, text);
-      if (raw !== opened.original)
-        throw Error(
-          "This journal changed elsewhere. Keep your draft and reopen it",
-        );
-      return text;
+      if (opened.file && this.vault.getAbstractFileByPath(opened.path) !== opened.file)
+        throw Error("This journal changed elsewhere. Keep your draft and reopen it");
+      if (opened.draft) {
+        if (raw === null && opened.original !== null) throw Error("This journal changed elsewhere. Keep your draft and reopen it");
+        return writeJournalDraft(raw ?? "", opened.draft, text);
+      }
+      if (raw !== opened.original) throw Error("This journal changed elsewhere. Keep your draft and reopen it");
+      return writeDailyBody(raw ?? "", text);
     });
   }
-  async journalDays(cfg, days) {
+  journalModes(folder) {
+    const node = folder === "/" ? this.vault.getRoot() : this.vault.getAbstractFileByPath(folder);
+    const modes = new Set();
+    for (const item of node?.children ?? []) {
+      if (item instanceof TFile && item.extension === "md" && validDay(item.basename)) modes.add("daily");
+      if (item instanceof TFolder && /^\d{4}$/.test(item.name) &&
+          item.children.some(file => file instanceof TFile && file.extension === "md" &&
+            file.basename.startsWith(item.name + "-") && validDay(file.basename + "-01"))) modes.add("monthly");
+    }
+    return [...modes];
+  }
+  async journalDays(cfg, days, visible = () => true) {
     const result = new Set(),
       paths = new Map();
     for (const day of days) paths.set(this.journalPath(cfg, day), day);
     for (const [path, day] of paths) {
+      if (!visible()) break;
       if (!this.vault.getAbstractFileByPath(path)) continue;
       const raw = await this.readOptional(path);
       if (cfg.journalMode === "monthly") {
         for (const e of journalEntries(raw ?? "", day.slice(0, 7)).values())
           if (e.written) result.add(e.date);
-      } else if (raw?.trim()) result.add(day);
+      } else if (raw && dailyDraft(raw).text.trim()) result.add(day);
     }
     return result;
   }

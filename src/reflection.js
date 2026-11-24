@@ -167,7 +167,7 @@ function fingerprint(plugin) {
   return JSON.stringify([plugin.cfg.root, plugin.cfg.ai, plugin.uiLanguage()]);
 }
 async function preview(plugin, action) {
-  const { form } = await import("./ui.js");
+  const { el, form } = await import("./ui.js");
   const ai = plugin.cfg.ai;
   const stamp = fingerprint(plugin);
   let url;
@@ -213,7 +213,15 @@ async function preview(plugin, action) {
       }
     },
     {
-      text: "POST " + url + "\n\n" + JSON.stringify(payload, null, 2),
+      setup: ({ body, err }) => {
+        const preview = el(body, "div");
+        err.before(preview);
+        el(preview, "p", plugin.t("Send to", "发送至") + " " + url);
+        el(preview, "p", ai.model + " · " + ai.fields.map(key => plugin.t(...categories[key])).join(plugin.t(", ", "、")));
+        const details = el(preview, "details");
+        el(details, "summary", plugin.t("View exact request", "查看完整请求"));
+        el(details, "pre", JSON.stringify(payload, null, 2), "dd-preview");
+      },
       submit: action.label,
     },
   );
@@ -223,8 +231,10 @@ export async function aiSettings(plugin, parent, rerender) {
   const { el, button, form, toggle } = await import("./ui.js");
   const ai = plugin.cfg.ai;
   const t = (en, zh) => plugin.t(en, zh);
-  const section = el(parent, "section", "", "dd-group");
-  el(section, "h3", t("AI reflection", "AI 寄语"));
+  const group = el(parent, "details", "", "dd-group");
+  el(group, "summary", t("AI reflection", "AI 寄语"));
+  group.open = !!ai.endpoint || !!plugin.cfg.modules.ai;
+  const section = el(group, "div");
   async function setConfig(edit) {
     await plugin.update((cfg) => {
       edit(cfg.ai);

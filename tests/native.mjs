@@ -5,6 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   copyFile,
+  stat,
   mkdir,
   mkdtemp,
   readFile,
@@ -279,7 +280,7 @@ async function openBoard() {
   await page.locator(".dd-app").waitFor();
 }
 async function submit(fields, action = "Save") {
-  const modal = await visibleControl((p) => p.locator(".dd-modal").last(), "the dashboard form");
+  const modal = await visibleControl((p) => p.locator(".dd-modal, .dd-inline").last(), "the dashboard form");
   for (const [label, value] of Object.entries(fields))
     await modal.getByLabel(label, { exact: true }).fill(value);
   await click(action, modal);
@@ -324,7 +325,7 @@ async function emptyCase() {
   await waitRaw(inbox, title);
   await click("Toggle task · " + title);
   await waitRaw(inbox, "[x] " + title);
-  await click("Undo last change");
+  await click("Undo");
   await waitRaw(inbox, "[ ] " + title);
   await click("Add habit");
   await submit({ "Habit name": "Morning walk" });
@@ -341,6 +342,47 @@ async function emptyCase() {
   accepted(
     "Offline empty vault, zero startup notes, task writeback/undo, first habit check-in, and first daily note",
   );
+  const dailyPath = "Dora Dashboard/Journal/" + today + ".md";
+  const properties = "---\r\ntags: [field]\r\n---\r\n";
+  const original = properties + "Old body\r\n";
+  const modify = async raw => page.evaluate(async ({path,raw}) => app.vault.modify(app.vault.getAbstractFileByPath(path), raw), {path:dailyPath,raw});
+  await modify(original);
+  await click("Write today");
+  const diary = page.locator(".dd-modal");
+  const input = diary.getByLabel("Journal entry", {exact:true});
+  assert.equal(await input.inputValue(), "Old body\n");
+  const priorMtime = (await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs;
+  await click("Save",diary);
+  await diary.waitFor({state:"hidden"});
+  assert.equal(await noteAt(dailyPath),original);
+  assert.equal((await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs,priorMtime);
+  await click("Write today");
+  await input.fill("A recovered line.");
+  await page.keyboard.press("Escape");
+  await click("Write today");
+  assert.equal(await input.inputValue(),"A recovered line.");
+  await modify(properties + "Changed elsewhere\r\n");
+  await click("Save",diary);
+  await diary.getByRole("button",{name:"Copy draft"}).waitFor();
+  assert.equal(await input.inputValue(),"A recovered line.");
+  assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
+  await click("Discard draft",diary);
+  await click("Write today");
+  await input.fill("");
+  await click("Save",diary);
+  assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
+  await click("Clear this day’s text",diary);
+  await waitRaw(dailyPath,properties);
+  await diary.waitFor({state:"hidden"});
+  assert.equal(await noteAt(dailyPath),properties);
+  await click("Write today");
+  await submit({"Journal entry":"A new page in the sketchbook."});
+  const grid = page.locator(".dd-heatmap");
+  assert.equal(await grid.locator('[tabindex="0"]').count(),1);
+  await grid.locator('[tabindex="0"]').focus();
+  await page.keyboard.press("ArrowLeft");
+  assert.ok(await grid.locator(':focus').getAttribute("title") !== today);
+  accepted("Journal no-op preserves bytes and mtime, daily properties survive clear, Escape restores drafts, external writes win, calendar has one tab stop");
   await page.evaluate(async (id) => {
     await app.plugins.plugins[id].update((c) => {
       c.modules.finance = true;
@@ -370,9 +412,17 @@ async function emptyCase() {
   await click("Set a goal");
   await submit({ "Goal amount (clear to remove)": "1200.00" });
   await page.waitForFunction(
-    (id) => app.plugins.plugins[id].cfg.financeGoal === "1200.00",
+    (id) => app.plugins.plugins[id].cfg.financeGoals.CNY === "1200.00",
     id,
   );
+  const currency = page.getByLabel("Ledger currency");
+  await currency.selectOption("USD");
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "USD",id);
+  await click("Set a goal");
+  await submit({ "Goal amount (clear to remove)": "45.00" });
+  await currency.selectOption("CNY");
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "CNY",id);
+  assert.deepEqual(await page.evaluate(id => app.plugins.plugins[id].cfg.financeGoals,id), {CNY:"1200.00",USD:"45.00"});
   await page.evaluate(async (id) => {
     const p = app.plugins.plugins[id];
     await p.update((c) => {
@@ -482,7 +532,7 @@ async function screenshots() {
   });
   const style = ".status-bar { visibility: hidden !important; }";
   await page.screenshot({
-    path: join(repo, "docs/dashboard.png"),
+    path: join(output, "dashboard.png"),
     clip,
     style,
     animations: "disabled",
@@ -868,7 +918,7 @@ async function upgradeCase() {
     await app.plugins.plugins[id].openDashboard();
   }, id);
   const cfg = await page.evaluate((id) => app.plugins.plugins[id].cfg, id);
-  assert.equal(cfg.version, 1);
+  assert.equal(cfg.version, 2);
   assert.equal(cfg.nickname, "Rowan");
   assert.deepEqual(cfg.visible, ["journal", "tasks"]);
   assert.deepEqual(cfg.order.slice(0, 2), ["journal", "tasks"]);
@@ -876,7 +926,7 @@ async function upgradeCase() {
   assert.deepEqual(cfg.accounts, fixtureAccounts());
   assert.equal(cfg.sources.inbox, "Notebook.md");
   assert.equal(cfg.modules.creator, false);
-  assert.equal(JSON.parse(await readFile(data, "utf8")).version, 1);
+  assert.equal(JSON.parse(await readFile(data, "utf8")).version, 2);
   assert.deepEqual(
     [await noteAt("Notebook.md"), await noteAt("Day one.md")],
     [before, historic],
@@ -891,6 +941,57 @@ async function upgradeCase() {
   accepted(
     "Actual host replacement of synthetic 0.9.0 baseline by installed release; persisted v0 layout, bindings and original Markdown survive migration",
   );
+  await stop();
+}
+
+async function previousRelease(updateFromDirectory = false) {
+  const host = await makeHost("Published predecessor");
+  const previous = join(repo, "test-results/previous");
+  for (const asset of binaryAssets) await copyFile(join(previous, asset), join(host.plugin, asset));
+  const context = await boot(host, "1.0.1");
+  const paper = "# Notebook\r\n\r\n- [ ] Look for a new trail ^trail\r\n";
+  const accounts = fixtureAccounts();
+  await page.evaluate(async ({ id, paper, accounts, today }) => {
+    const p = app.plugins.plugins[id];
+    await app.vault.create("Notebook.md", paper);
+    await p.update(c => {
+      c.language = "en"; c.nickname = "River"; c.currency = "USD"; c.financeGoal = "1200.00";
+      c.order = ["habits", "projects", "tasks", "journal"]; c.visible = ["habits", "tasks", "journal"];
+      c.sources.inbox = "Notebook.md"; c.accounts = accounts;
+      c.projects = [{ id: "field", name: "Atlas", path: "Notebook.md", learning: true }];
+    });
+    await p.notes.editHabits(p.cfg.root, h => h.items.push({ id:"walk", name:"Walk", days:[1], checks:[today], icon:"sprout" }));
+    await p.notes.saveDiary(await p.notes.diary(p.cfg,today),"A quiet walk.\n");
+  }, { id, paper, accounts, today });
+  const paths = ["Notebook.md", "Dora Dashboard/Habits.md", "Dora Dashboard/Journal/" + today + ".md"];
+  const notes = await Promise.all(paths.map(noteAt));
+  if (updateFromDirectory) {
+    await context.setOffline(false);
+    await page.evaluate(() => { app.setting.open(); app.setting.openTabById("community-plugins"); });
+    const check = await visibleControl(p => p.getByRole("button", { name: /check for updates|检查更新/i }).first(), "Check for updates", 30000);
+    await check.click();
+    const update = await visibleControl(p => p.getByRole("button", { name: /^(update|update all|update now|更新|全部更新)(?:\s*\(.*\))?$/i }).first(),
+      "Update installed community plugin", 65000);
+    await update.click();
+    await waitRaw(".obsidian/plugins/" + id + "/manifest.json", manifest.version);
+  }
+  await stop();
+  if (!updateFromDirectory) await install(host);
+  await boot(host);
+  const cfg = await page.evaluate(id => app.plugins.plugins[id].cfg,id);
+  assert.equal(cfg.version, 2);
+  assert.equal(cfg.financeGoals.USD, "1200.00");
+  assert.deepEqual(cfg.accounts, accounts);
+  assert.equal(cfg.nickname, "River");
+  assert.equal(cfg.sources.inbox, "Notebook.md");
+  assert.deepEqual(cfg.order.slice(0,4), ["habits","projects","tasks","journal"]);
+  assert.deepEqual(cfg.visible, ["habits","tasks","journal"]);
+  assert.equal(cfg.projects[0].path, "Notebook.md");
+  assert.deepEqual(await Promise.all(paths.map(noteAt)), notes);
+  await page.evaluate(id => app.plugins.plugins[id].openDashboard(),id);
+  await page.locator("[data-card=journal] .dd-cell").first().waitFor();
+  accepted((updateFromDirectory ? "Native Check for updates → Update" : "Candidate replacement") +
+    " from public 1.0.1 preserves layout, sources, goals, accounts, history and Markdown, including after restart");
   await stop();
 }
 
@@ -976,9 +1077,11 @@ const cases = {
   creator: creatorCase,
   upgrade: upgradeCase,
   store: storeCase,
+  predecessor: previousRelease,
+  "market-update": () => previousRelease(true),
 };
 const which = process.argv.slice(2);
-const selected = which.length ? which : ["empty", "library", "creator", "upgrade"];
+const selected = which.length ? which : ["empty", "library", "creator", "upgrade", "predecessor"];
 for (const key of selected)
   if (!Object.hasOwn(cases, key)) throw new Error("Unknown test case " + key);
 let succeeded = false;

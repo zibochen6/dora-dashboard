@@ -33,6 +33,7 @@ function host({code, original}) {
     adapter:new FileSystemAdapter(),
     getAbstractFileByPath:getFile,
     getMarkdownFiles:() => Object.keys(read()).map(getFile),
+    getAllLoadedFiles:() => Object.keys(read()).map(getFile),
     async cachedRead(file) { return read()[file.path]; },
     async process(file,edit) {
       const notes = read();
@@ -81,7 +82,17 @@ function host({code, original}) {
     close() { this.onClose(); this.modalEl.remove(); }
   }
   const sdk = { Plugin, ItemView, TFile, TFolder, FileSystemAdapter, Modal, PluginSettingTab:class {},
-    FuzzySuggestModal:class {}, Notice:class { constructor(message) { throw Error(message); } },
+    FuzzySuggestModal:class extends Modal {
+      setPlaceholder() {}
+      onOpen() {
+        for (const file of this.getItems()) {
+          const b = this.contentEl.appendChild(document.createElement("button"));
+          b.textContent = this.getItemText(file);
+          b.onclick = () => { this.close(); this.onChooseItem(file); };
+        }
+      }
+      onClose() {}
+    }, Notice:class { constructor(message) { throw Error(message); } },
     setIcon(){},getLanguage:()=>"en" };
   const module = {exports:{}};
   new Function("require","module",code)(id => id === "obsidian" ? sdk : id === "node:fs/promises"
@@ -112,14 +123,15 @@ try {
   }
   await boot();
   const modal = page.getByRole("dialog");
+  const inline = page.locator(".dd-inline");
   const button = (label,parent=page) => parent.getByRole("button",{name:label,exact:true});
   const card = id => page.locator('[data-project="'+id+'"]');
   const read = path => page.evaluate(path=>window.qa.read(path),path);
   const config = () => page.evaluate(()=>window.qa.config());
   async function project(name,path="") {
-    await button("New project").click();
+    await button(path ? "Link checklist" : "New project").click();
+    if (path) await button(path,modal).click();
     await modal.getByLabel("Project name").fill(name);
-    if (path) await modal.getByLabel("Link existing Markdown (optional)").fill(path);
     await button("Create project",modal).click();
     await modal.waitFor({state:"hidden"});
     const project = (await config()).projects.find(p => p.name === name);
@@ -130,8 +142,8 @@ try {
   }
   const created = await project("New workshop");
   await page.keyboard.press("Enter");
-  await modal.getByLabel("Title").fill("Set out the tools");
-  await button("Save",modal).click();
+  await inline.getByLabel("Title").fill("Set out the tools");
+  await inline.getByLabel("Title").press("Enter");
   await button("Set out the tools",card(created.id)).waitFor();
   assert.match(await read(created.path),/- \[ \] Set out the tools \^dora-/);
   const linked = await project("Existing workshop","Checklist.md");
@@ -148,9 +160,9 @@ try {
   const today = page.locator('[data-card="tasks"]');
   await button("Read notes",today).waitFor();
   await button("Toggle task · Read notes",first).click();
-  await button("Edit task · Read notes",first).click();
-  await modal.getByLabel("Task title").fill("Read another page");
-  await button("Save",modal).click();
+  await button("Edit task · Read notes",today).click();
+  await inline.getByLabel("Task title").fill("Read another page");
+  await inline.getByLabel("Task title").press("Enter");
   const completed = button("Toggle task · Read another page",today);
   await completed.waitFor();
   assert.equal(await completed.getAttribute("aria-pressed"),"true");
@@ -160,12 +172,12 @@ try {
   await button("Learning workshop",linkedCard).waitFor();
   assert.equal(await completed.getAttribute("aria-pressed"),"true");
   await button("Edit task · Read another page",linkedCard).click();
-  await modal.getByLabel("Task title").fill("Unsaved draft");
+  await inline.getByLabel("Task title").fill("Unsaved draft");
   await page.evaluate(path=>window.qa.change(path,raw=>raw.replace("Read another page","External title")),linked.path);
-  await button("Save",modal).click();
-  await modal.getByRole("alert").filter({hasText:/Task changed/}).waitFor();
-  assert.equal(await modal.getByLabel("Task title").inputValue(),"Unsaved draft");
-  await button("Cancel",modal).click();
+  await button("Save",inline).click();
+  await inline.getByRole("alert").filter({hasText:/Task changed/}).waitFor();
+  assert.equal(await inline.getByLabel("Task title").inputValue(),"Unsaved draft");
+  await inline.getByLabel("Task title").press("Escape");
   await page.evaluate(()=>window.qa.chinese());
   await button("新建项目").waitFor();
   await button("编辑待办 · External title",linkedCard).waitFor();

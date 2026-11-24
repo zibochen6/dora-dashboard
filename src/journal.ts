@@ -131,6 +131,27 @@ export function journalEntries(
   );
 }
 
+/** Keep file properties and the byte-order mark outside the editable body. */
+export function dailyDraft(raw: string) {
+  const bom = raw.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const content = raw.slice(bom.length);
+  let prefix = bom;
+  if (/^---[ \t]*(?:\r?\n|$)/.test(content)) {
+    const header = /^---[ \t]*\r?\n[\s\S]*?^(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/m.exec(content);
+    if (!header || header.index !== 0) throw Error("Close the properties block in the source note first");
+    prefix += header[0];
+  }
+  return { prefix, text: raw.slice(prefix.length).replace(/\r\n/g, "\n") };
+}
+
+export function writeDailyBody(raw: string, text: string) {
+  const { prefix, text: previous } = dailyDraft(raw);
+  if (text === previous) return raw;
+  const eol = raw.match(/\r?\n/)?.[0] ?? "\n";
+  const separator = prefix.endsWith("\n") || !prefix || prefix === "\uFEFF" || !text ? "" : eol;
+  return prefix + separator + text.replace(/\r?\n/g, eol);
+}
+
 function editorText(body: string) {
   return body
     .replace(/\r\n/g, "\n")

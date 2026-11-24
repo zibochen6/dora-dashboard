@@ -1,5 +1,8 @@
 name: Desktop tests
-on: workflow_dispatch
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -10,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: [release, directory]
+        check: ${{ fromJSON(github.event_name == 'pull_request' && '["candidate"]' || '["release","directory","update"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,13 +23,25 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      - run: npm test
+      - name: Build the candidate from the reviewed commit
+        if: matrix.check == 'candidate'
+        run: npm run build
       - name: Download published plugin files
+        if: matrix.check != 'candidate'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download "$(node -p 'require("./manifest.json").version')" --dir dist \
             --pattern main.js --pattern manifest.json --pattern styles.css
           cmp manifest.json dist/manifest.json
+      - name: Fetch the previous public release for the upgrade vault
+        if: matrix.check != 'directory'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p test-results/previous
+          gh release download 1.0.1 --dir test-results/previous --pattern main.js --pattern manifest.json --pattern styles.css
       - name: Prepare Obsidian and its virtual display
         run: |
           package="$RUNNER_TEMP/obsidian.deb"
@@ -39,11 +54,14 @@ jobs:
             sudo apt-get install -y --no-install-recommends "${packages[@]}"
           fi
       - name: Test the release in isolated vaults
-        if: matrix.check == 'release'
+        if: matrix.check == 'release' || matrix.check == 'candidate'
         run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' sh -ec 'openbox >/dev/null 2>&1 & exec npm run test:native'
       - name: Search, install and enable in the community directory
         if: matrix.check == 'directory'
         run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' sh -ec 'openbox >/dev/null 2>&1 & exec npm run test:native -- store'
+      - name: Update the installed 1.0.1 plugin through Obsidian
+        if: matrix.check == 'update'
+        run: xvfb-run -n 2 -s '-screen 0 1440x1000x24' sh -ec 'openbox >/dev/null 2>&1 & exec npm run test:native -- market-update'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
