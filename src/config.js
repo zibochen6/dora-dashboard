@@ -33,7 +33,7 @@ export const defaultSources = {
 };
 function fresh() {
   return {
-    version: 1,
+    version: 2,
     language: "auto",
     nickname: "",
     openOnStartup: false,
@@ -47,7 +47,7 @@ function fresh() {
     projects: [],
     pages: [],
     accounts: [],
-    financeGoal: "",
+    financeGoals: {},
     currency: "CNY",
     wereadSecret: "",
     ai: { endpoint: "", model: "", secret: "", lang: "auto", fields: [] },
@@ -59,18 +59,22 @@ export function configFrom(raw) {
   if (
     typeof raw !== "object" ||
     Array.isArray(raw) ||
-    ![undefined, 0, 1].includes(raw.version)
+    ![undefined, 0, 1, 2].includes(raw.version)
   )
     throw Error("Unsupported settings format");
   const data = { ...raw };
   if (!data.version && Array.isArray(data.cards)) data.visible = data.cards;
-  for (const key of ["nickname", "financeGoal", "wereadSecret"])
+  for (const key of ["nickname", "wereadSecret"])
     if (typeof data[key] === "string") cfg[key] = data[key];
   if (visiblePath(data.root)) cfg.root = data.root;
   if (["en", "zh", "auto"].includes(data.language))
     cfg.language = data.language;
   if (data.journalMode === "monthly") cfg.journalMode = "monthly";
   if (/^[A-Z]{3}$/.test(data.currency)) cfg.currency = data.currency;
+  for (const [unit, value] of Object.entries(data.financeGoals ?? {}))
+    if (/^[A-Z]{3}$/.test(unit) && typeof value === "string" && value) cfg.financeGoals[unit] = value;
+  if (data.version !== 2 && typeof data.financeGoal === "string" && data.financeGoal)
+    cfg.financeGoals[cfg.currency] = data.financeGoal;
   cfg.openOnStartup = data.openOnStartup === true;
   const known = (items, keys) =>
     [...new Set(items)].filter((id) => Object.hasOwn(keys, id));

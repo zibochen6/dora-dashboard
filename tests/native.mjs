@@ -5,6 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   copyFile,
+  stat,
   mkdir,
   mkdtemp,
   readFile,
@@ -279,7 +280,7 @@ async function openBoard() {
   await page.locator(".dd-app").waitFor();
 }
 async function submit(fields, action = "Save") {
-  const modal = await visibleControl((p) => p.locator(".dd-modal").last(), "the dashboard form");
+  const modal = await visibleControl((p) => p.locator(".dd-modal, .dd-inline").last(), "the dashboard form");
   for (const [label, value] of Object.entries(fields))
     await modal.getByLabel(label, { exact: true }).fill(value);
   await click(action, modal);
@@ -324,8 +325,20 @@ async function emptyCase() {
   await waitRaw(inbox, title);
   await click("Toggle task · " + title);
   await waitRaw(inbox, "[x] " + title);
-  await click("Undo last change");
+  await click("Undo");
   await waitRaw(inbox, "[ ] " + title);
+  const protectedParent = await page.evaluate(async ({id,inbox}) => {
+    const p = app.plugins.plugins[id], undo = await p.notes.addTask(inbox,"New parent");
+    const file = app.vault.getAbstractFileByPath(inbox);
+    await app.vault.process(file, raw => raw + "  - [ ] Externally added child\n");
+    const before = await app.vault.read(file);
+    let conflict = "";
+    try { await undo(); } catch (err) { conflict = err.message; }
+    return {same:(await app.vault.read(file)) === before,conflict};
+  },{id,inbox});
+  assert.equal(protectedParent.same,true);
+  assert.match(protectedParent.conflict,/nested content/);
+  accepted("Undo preserves an externally added child and its parent task");
   await click("Add habit");
   await submit({ "Habit name": "Morning walk" });
   const habit = page.getByRole("button", { name: /^Morning walk/ });
@@ -341,6 +354,57 @@ async function emptyCase() {
   accepted(
     "Offline empty vault, zero startup notes, task writeback/undo, first habit check-in, and first daily note",
   );
+  const dailyPath = "Dora Dashboard/Journal/" + today + ".md";
+  const properties = "---\r\ntags: [field]\r\n---\r\n";
+  const original = properties + "Old body\r\n";
+  const modify = async raw => page.evaluate(async ({path,raw}) => app.vault.modify(app.vault.getAbstractFileByPath(path), raw), {path:dailyPath,raw});
+  let diary, input;
+  const openDiary = async () => {
+    await click("Write today");
+    diary = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByRole("textbox",{name:"Journal entry"})}), "the journal editor");
+    input = diary.getByLabel("Journal entry", {exact:true});
+  };
+  await modify(original);
+  await openDiary();
+  assert.equal(await input.inputValue(), "Old body\n");
+  const priorMtime = (await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs;
+  await click("Save",diary);
+  await diary.waitFor({state:"hidden"});
+  assert.equal(await noteAt(dailyPath),original);
+  assert.equal((await stat(join(host.vault,dailyPath), {bigint:true})).mtimeNs,priorMtime);
+  await openDiary();
+  await input.fill("A recovered line.");
+  await diary.page().keyboard.press("Escape");
+  await diary.waitFor({state:"hidden"});
+  await openDiary();
+  assert.equal(await input.inputValue(),"A recovered line.");
+  await modify(properties + "Changed elsewhere\r\n");
+  await click("Save",diary);
+  await diary.getByRole("button",{name:"Copy draft"}).waitFor();
+  await diary.screenshot({path:join(output,"journal-conflict.png"),animations:"disabled"});
+  assert.equal(await input.inputValue(),"A recovered line.");
+  assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
+  await click("Discard draft",diary);
+  assert.equal(await input.inputValue(),"A recovered line.");
+  await click("Confirm discard",diary);
+  await diary.waitFor({state:"hidden"});
+  await openDiary();
+  await input.fill("");
+  await click("Save",diary);
+  assert.equal(await noteAt(dailyPath),properties + "Changed elsewhere\r\n");
+  await diary.screenshot({path:join(output,"journal-clear.png"),animations:"disabled"});
+  await click("Clear this day’s text",diary);
+  await waitRaw(dailyPath,properties);
+  await diary.waitFor({state:"hidden"});
+  assert.equal(await noteAt(dailyPath),properties);
+  await click("Write today");
+  await submit({"Journal entry":"A new page in the sketchbook."});
+  const grid = page.locator(".dd-heatmap");
+  assert.equal(await grid.locator('[tabindex="0"]').count(),1);
+  await grid.locator('[tabindex="0"]').focus();
+  await page.keyboard.press("ArrowLeft");
+  assert.ok(await grid.locator(':focus').getAttribute("title") !== today);
+  accepted("Journal no-op preserves bytes and mtime, daily properties survive clear, Escape restores drafts, external writes win, calendar has one tab stop");
   await page.evaluate(async (id) => {
     await app.plugins.plugins[id].update((c) => {
       c.modules.finance = true;
@@ -368,11 +432,19 @@ async function emptyCase() {
     '"expenseCents": 350',
   );
   await click("Set a goal");
-  await submit({ "Goal amount (clear to remove)": "1200.00" });
+  await submit({ "Goal amount": "1200.00" });
   await page.waitForFunction(
-    (id) => app.plugins.plugins[id].cfg.financeGoal === "1200.00",
+    (id) => app.plugins.plugins[id].cfg.financeGoals.CNY === "1200.00",
     id,
   );
+  const currency = page.getByLabel("Ledger currency");
+  await currency.selectOption("USD");
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "USD",id);
+  await click("Set a goal");
+  await submit({ "Goal amount": "45.00" });
+  await currency.selectOption("CNY");
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.currency === "CNY",id);
+  assert.deepEqual(await page.evaluate(id => app.plugins.plugins[id].cfg.financeGoals,id), {CNY:"1200.00",USD:"45.00"});
   await page.evaluate(async (id) => {
     const p = app.plugins.plugins[id];
     await p.update((c) => {
@@ -394,6 +466,53 @@ async function emptyCase() {
       "A new page",
     ),
   );
+  const archivePath = "My journal/2026/2026-11.md";
+  const neighbor = "### [[2026-11-23]] <!-- Monday -->\r\n\r\nKeep this day.\r\n### 📅 2026-11-25\r\nFuture day.\n";
+  await page.evaluate(async ({id,archivePath,neighbor}) => {
+    const content = "## 2026-11-22\r\n\r\nFirst day.\r\n\r\n" + neighbor;
+    const folder = "My journal/2026", file = app.vault.getAbstractFileByPath(archivePath);
+    if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
+    if (file) await app.vault.modify(file,content); else await app.vault.create(archivePath,content);
+    await app.plugins.plugins[id].editDiary("2026-11-22");
+  },{id,archivePath,neighbor});
+  const entry = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}),"November 22");
+  assert.equal(await entry.getByLabel("Journal entry").inputValue(),"First day.");
+  await entry.getByLabel("Journal entry").fill("");
+  await click("Save",entry);
+  await click("Clear this day’s text",entry);
+  await entry.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).endsWith(neighbor));
+  assert.deepEqual(await page.evaluate(async id => {
+    const p = app.plugins.plugins[id];
+    return [...await p.notes.journalDays(p.cfg,["2026-11-22","2026-11-23"])];
+  },id),["2026-11-23"]);
+  const codeMonth = "## 2026-11-22\n\n    2026-11-23\n---\n\n<pre>\n## 2026-11-23\nExample.\n</pre>\n\nStill the 22nd.\n\n## 2026-11-24\nLast.\n";
+  await page.evaluate(async ({id,archivePath,codeMonth}) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath(archivePath),codeMonth);
+    await app.plugins.plugins[id].editDiary("2026-11-23");
+  },{id,archivePath,codeMonth});
+  const newDay = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}),"the real 23rd");
+  assert.equal(await newDay.getByLabel("Journal entry").inputValue(),"");
+  await newDay.getByLabel("Journal entry").fill("A new, real day.");
+  await click("Save",newDay);
+  await newDay.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).startsWith(codeMonth));
+  const protectedDay = "### [[2026-11-23]]\r\nSecond.\r\n\r\n<pre>%%</pre>\r\n\r\nUnchanged.\n";
+  await page.evaluate(async ({id,archivePath,protectedDay}) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath(archivePath),"## 2026-11-22\nFirst.\n\n    %%\n\n" + protectedDay);
+    await app.plugins.plugins[id].editDiary("2026-11-22");
+  },{id,archivePath,protectedDay});
+  const oldDay = await visibleControl(p => p.locator(".dd-modal").filter({has:p.getByLabel("Journal entry")}), "the real 22nd");
+  const journalText = oldDay.getByLabel("Journal entry");
+  assert.ok(!(await journalText.inputValue()).includes("Second."));
+  await journalText.fill("");
+  await click("Save",oldDay);
+  await click("Clear this day’s text",oldDay);
+  await oldDay.waitFor({state:"hidden"});
+  assert.ok((await noteAt(archivePath)).endsWith(protectedDay));
+  accepted("Literal comment delimiters in separate code blocks cannot hide or clear the next real day");
+  accepted("Dates inside indented code and raw HTML stay literal when a real entry is created in the app");
+  accepted("Clearing an annotated month leaves the linked next day byte-identical and the heatmap counts only requested dates");
   accepted(
     "Both daily and monthly journal layouts using independently configured folders",
   );
@@ -437,12 +556,12 @@ async function screenshots() {
     app.workspace.leftSplit.collapse();
     app.workspace.rightSplit.collapse();
   });
-  await page.setViewportSize({ width: 1400, height: 920 });
+  await page.setViewportSize({ width: 1400, height: 1100 });
   const dashboard = page.locator(".dd-app");
   await page.evaluate(async (id) => {
     const p = app.plugins.plugins[id];
+    p.lastAction = null;
     for (const view of p.views) {
-      view.undo = undefined;
       await view.refresh();
     }
     await document.fonts.ready;
@@ -482,11 +601,16 @@ async function screenshots() {
   });
   const style = ".status-bar { visibility: hidden !important; }";
   await page.screenshot({
-    path: join(repo, "docs/dashboard.png"),
+    path: join(output, "dashboard.png"),
     clip,
     style,
     animations: "disabled",
   });
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.language = "zh"; }), id);
+  await page.getByRole("heading", {name:"今日待办",exact:true}).waitFor();
+  await page.screenshot({path:join(output,"dashboard-zh.png"),clip,style,animations:"disabled"});
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.language = "en"; }), id);
+  await page.getByRole("heading", {name:"Today's tasks",exact:true}).waitFor();
   // Theme classes are the host's documented selectors; these changes stay in this temporary renderer.
   await page.evaluate(() => {
     document.body.classList.remove("theme-light");
@@ -651,6 +775,35 @@ async function libraryCase() {
   );
   await screenshots();
   await page.setViewportSize({ width: 1400, height: 920 });
+  // A settings update must never transplant a draft onto a namesake in another file.
+  const duplicate = "- [ ] Identical task <!-- dora-day:" + today + " --> ^same\n";
+  await page.evaluate(async ({id,duplicate}) => {
+    const p = app.plugins.plugins[id];
+    for (const path of ["A.md","B.md"]) await app.vault.create(path,duplicate);
+    await p.update(c => c.projects.push(...["A","B"].map(key => ({id:key,name:key,path:key+".md",learning:false}))));
+  }, {id,duplicate});
+  const todayCard = page.locator("[data-card=tasks]");
+  const namesakes = todayCard.getByRole("button",{name:"Edit task · Identical task"});
+  await namesakes.nth(1).click();
+  const inline = page.locator(".dd-inline");
+  await inline.getByRole("textbox").fill("Keep my draft for B");
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.nickname = "Alex River"; }),id);
+  await page.waitForFunction(() => document.querySelector(".dd-hero h1")?.textContent.includes("Alex River"));
+  assert.ok((await inline.evaluate(form => form.previousElementSibling.dataset.task)).includes("B.md"));
+  await page.evaluate(id => app.plugins.plugins[id].update(c => { c.projects = c.projects.filter(p => p.id !== "B"); }), id);
+  await inline.getByRole("button",{name:"Copy draft"}).waitFor();
+  assert.ok(await inline.getByRole("button",{name:"Save"}).isDisabled());
+  assert.equal(await inline.getByRole("textbox").inputValue(),"Keep my draft for B");
+  await inline.getByRole("textbox").press("Enter");
+  assert.equal(await noteAt("A.md"),duplicate);
+  assert.equal(await noteAt("B.md"),duplicate);
+  await click("Cancel",inline);
+  const navLearning = page.locator(".dd-nav").getByRole("button",{name:"Learning"});
+  await navLearning.focus();
+  await navLearning.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-current") === "page" && document.activeElement.textContent.includes("Learning"));
+  await click("Home");
+  accepted("Namesake tasks keep the exact source after refresh; unlink preserves the unsaved input and blocks writes; keyboard navigation keeps focus");
   await click("Settings", page.locator(".dd-nav"));
   const settings = await visibleControl((p) => p.locator(".dd-settings-dialog").last(), "dashboard settings");
   for (const tab of [
@@ -680,6 +833,15 @@ async function libraryCase() {
       id,
     ),
   );
+  const libraryReads = await page.evaluate(async id => {
+    const p = app.plugins.plugins[id], read = p.notes.readOptional;
+    const reads = [];
+    p.notes.readOptional = async function(path) { if (path.startsWith("Library/")) reads.push(path); return read.call(this,path); };
+    try { for (const view of p.views) await view.refresh(); }
+    finally { p.notes.readOptional = read; }
+    return reads;
+  }, id);
+  assert.deepEqual(libraryReads, []);
   await click("New page", settings);
   await submit({ "Page name": "Planning desk" });
   await click("Add widget", settings);
@@ -687,6 +849,12 @@ async function libraryCase() {
   await editor.getByLabel("Type").selectOption("milestones");
   await click("Save", editor);
   await editor.waitFor({ state: "hidden" });
+  await click("Remove widget",settings);
+  await settings.getByRole("button",{name:"Undo",exact:true}).click();
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.pages.find(p => p.title === "Planning desk")?.widgets[0]?.kind === "milestones",id);
+  await click("Remove page",settings);
+  await settings.getByRole("button",{name:"Undo",exact:true}).click();
+  await page.waitForFunction(id => app.plugins.plugins[id].cfg.pages.find(p => p.title === "Planning desk")?.widgets.length === 1,id);
   await settings.page().keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
   await click("Planning desk");
@@ -868,7 +1036,7 @@ async function upgradeCase() {
     await app.plugins.plugins[id].openDashboard();
   }, id);
   const cfg = await page.evaluate((id) => app.plugins.plugins[id].cfg, id);
-  assert.equal(cfg.version, 1);
+  assert.equal(cfg.version, 2);
   assert.equal(cfg.nickname, "Rowan");
   assert.deepEqual(cfg.visible, ["journal", "tasks"]);
   assert.deepEqual(cfg.order.slice(0, 2), ["journal", "tasks"]);
@@ -876,7 +1044,7 @@ async function upgradeCase() {
   assert.deepEqual(cfg.accounts, fixtureAccounts());
   assert.equal(cfg.sources.inbox, "Notebook.md");
   assert.equal(cfg.modules.creator, false);
-  assert.equal(JSON.parse(await readFile(data, "utf8")).version, 1);
+  assert.equal(JSON.parse(await readFile(data, "utf8")).version, 2);
   assert.deepEqual(
     [await noteAt("Notebook.md"), await noteAt("Day one.md")],
     [before, historic],
@@ -891,6 +1059,57 @@ async function upgradeCase() {
   accepted(
     "Actual host replacement of synthetic 0.9.0 baseline by installed release; persisted v0 layout, bindings and original Markdown survive migration",
   );
+  await stop();
+}
+
+async function previousRelease(updateFromDirectory = false) {
+  const host = await makeHost("Published predecessor");
+  const previous = join(repo, "test-results/previous");
+  for (const asset of binaryAssets) await copyFile(join(previous, asset), join(host.plugin, asset));
+  const context = await boot(host, "1.0.1");
+  const paper = "# Notebook\r\n\r\n- [ ] Look for a new trail ^trail\r\n";
+  const accounts = fixtureAccounts();
+  await page.evaluate(async ({ id, paper, accounts, today }) => {
+    const p = app.plugins.plugins[id];
+    await app.vault.create("Notebook.md", paper);
+    await p.update(c => {
+      c.language = "en"; c.nickname = "River"; c.currency = "USD"; c.financeGoal = "1200.00";
+      c.order = ["habits", "projects", "tasks", "journal"]; c.visible = ["habits", "tasks", "journal"];
+      c.sources.inbox = "Notebook.md"; c.accounts = accounts;
+      c.projects = [{ id: "field", name: "Atlas", path: "Notebook.md", learning: true }];
+    });
+    await p.notes.editHabits(p.cfg.root, h => h.items.push({ id:"walk", name:"Walk", days:[1], checks:[today], icon:"sprout" }));
+    await p.notes.saveDiary(await p.notes.diary(p.cfg,today),"A quiet walk.\n");
+  }, { id, paper, accounts, today });
+  const paths = ["Notebook.md", "Dora Dashboard/Habits.md", "Dora Dashboard/Journal/" + today + ".md"];
+  const notes = await Promise.all(paths.map(noteAt));
+  if (updateFromDirectory) {
+    await context.setOffline(false);
+    await page.evaluate(() => { app.setting.open(); app.setting.openTabById("community-plugins"); });
+    const check = await visibleControl(p => p.getByRole("button", { name: /check for updates|检查更新/i }).first(), "Check for updates", 30000);
+    await check.click();
+    const update = await visibleControl(p => p.getByRole("button", { name: /^(update|update all|update now|更新|全部更新)(?:\s*\(.*\))?$/i }).first(),
+      "Update installed community plugin", 65000);
+    await update.click();
+    await waitRaw(".obsidian/plugins/" + id + "/manifest.json", manifest.version);
+  }
+  await stop();
+  if (!updateFromDirectory) await install(host);
+  await boot(host);
+  const cfg = await page.evaluate(id => app.plugins.plugins[id].cfg,id);
+  assert.equal(cfg.version, 2);
+  assert.equal(cfg.financeGoals.USD, "1200.00");
+  assert.deepEqual(cfg.accounts, accounts);
+  assert.equal(cfg.nickname, "River");
+  assert.equal(cfg.sources.inbox, "Notebook.md");
+  assert.deepEqual(cfg.order.slice(0,4), ["habits","projects","tasks","journal"]);
+  assert.deepEqual(cfg.visible, ["habits","tasks","journal"]);
+  assert.equal(cfg.projects[0].path, "Notebook.md");
+  assert.deepEqual(await Promise.all(paths.map(noteAt)), notes);
+  await page.evaluate(id => app.plugins.plugins[id].openDashboard(),id);
+  await page.locator("[data-card=journal] .dd-cell").first().waitFor();
+  accepted((updateFromDirectory ? "Native Check for updates → Update" : "Candidate replacement") +
+    " from public 1.0.1 preserves layout, sources, goals, accounts, history and Markdown, including after restart");
   await stop();
 }
 
@@ -976,9 +1195,11 @@ const cases = {
   creator: creatorCase,
   upgrade: upgradeCase,
   store: storeCase,
+  predecessor: previousRelease,
+  "market-update": () => previousRelease(true),
 };
 const which = process.argv.slice(2);
-const selected = which.length ? which : ["empty", "library", "creator", "upgrade"];
+const selected = which.length ? which : ["empty", "library", "creator", "upgrade", "predecessor"];
 for (const key of selected)
   if (!Object.hasOwn(cases, key)) throw new Error("Unknown test case " + key);
 let succeeded = false;
@@ -1005,6 +1226,7 @@ try {
     const report = {
       plugin: manifest.id,
       version: manifest.version,
+      sourceCommit: process.env.DORA_SOURCE_COMMIT,
       hostAgents: [...hostAgents],
       assetHashes,
       cases: selected,

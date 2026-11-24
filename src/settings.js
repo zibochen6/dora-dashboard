@@ -76,6 +76,12 @@ function select(parent, label, value, options, change) {
   input.addEventListener("change", () => change(input.value));
   return input;
 }
+function settingsControlKey(node) {
+  if (!node?.matches?.("input, button, select, summary")) return "";
+  const group = node.closest(".dd-custom-group")?.querySelector(".dd-setting-info strong")?.textContent ?? "";
+  const setting = node.closest(".dd-setting")?.querySelector(".dd-setting-info strong")?.textContent ?? "";
+  return JSON.stringify([group, setting, node.tagName, node.getAttribute("aria-label") || node.textContent]);
+}
 function renderSettings(p, host, active, go) {
   const t = (en, zh) => p.t(en, zh),
     cfg = p.cfg;
@@ -83,9 +89,35 @@ function renderSettings(p, host, active, go) {
     if (host.isConnected) go(active);
   };
   const edit = async (mutator) => {
+    const doc = host.ownerDocument;
+    const prior = host.contains(doc.activeElement) ? doc.activeElement : null;
+    const key = settingsControlKey(prior);
     await p.update(mutator);
+    const restore = prior && (doc.activeElement === prior || doc.activeElement === doc.body);
     redraw();
+    if (restore && key && doc.activeElement === doc.body)
+      [...host.querySelectorAll("input,button,select,summary")].find(node => settingsControlKey(node) === key)?.focus({preventScroll:true});
   };
+  async function removeItem(listOf, index, item, label, kind) {
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    let after;
+    await p.update(c => {
+      const list = listOf(c);
+      if (!list || !same(list[index], item)) throw Error(t("This item changed. Reopen settings.", "此项已变化，请重新打开设置。"));
+      list.splice(index, 1);
+      after = structuredClone(list);
+    });
+    p.feedback(label, () => p.update(c => {
+      const list = listOf(c);
+      if (!list || (kind === "widget" ? !same(list, after) :
+        list.some(x => x.id === item.id || (kind === "project" && x.path === item.path))))
+        throw Error(t("This list changed. The current entries were kept.", "列表已变化，已保留现有内容。"));
+      const nextId = after[index]?.id;
+      const next = nextId ? list.findIndex(x => x.id === nextId) : -1;
+      list.splice(next >= 0 ? next : Math.min(index, list.length), 0, structuredClone(item));
+    }));
+    redraw();
+  }
   host.empty();
   host.classList.add("dd-settings");
   const nav = el(host, "nav", "", "dd-settings-nav");
@@ -93,6 +125,7 @@ function renderSettings(p, host, active, go) {
     const b = button(nav, t(...label), () => go(id));
     if (active === id) b.setAttribute("aria-current", "page");
   }
+  p.feedbackBar(host, redraw);
   if (active === "appearance") {
     const box = section(host, t(...tabs.appearance));
     select(
@@ -143,7 +176,8 @@ function renderSettings(p, host, active, go) {
         }),
     );
     const list = section(host, t("Card order and color", "卡片顺序与配色"));
-    cfg.order.forEach((id, i) => {
+    const visible = cfg.order.filter(id => cfg.visible.includes(id));
+    visible.forEach((id, i) => {
       const tools = row(list, t(...cards[id]));
       const color = el(tools, "input");
       color.type = "color";
@@ -159,18 +193,15 @@ function renderSettings(p, host, active, go) {
       const move = (offset) =>
         edit((c) => {
           const at = c.order.indexOf(id);
-          if (at + offset >= 0 && at + offset < c.order.length)
-            [c.order[at], c.order[at + offset]] = [
-              c.order[at + offset],
-              c.order[at],
-            ];
+          const target = c.order.indexOf(visible[i + offset]);
+          if (target >= 0 && at >= 0) [c.order[at], c.order[target]] = [c.order[target], c.order[at]];
         });
       iconButton(tools, t("Move up", "上移"), "arrow-up", () =>
         move(-1),
       ).disabled = i === 0;
       iconButton(tools, t("Move down", "下移"), "arrow-down", () =>
         move(1),
-      ).disabled = i === cfg.order.length - 1;
+      ).disabled = i === visible.length - 1;
     });
   } else if (active === "modules") {
     const home = section(host, t("Home cards", "首页卡片"));
@@ -219,26 +250,11 @@ function renderSettings(p, host, active, go) {
         ),
       );
       button(tools, t("Remove page", "移除页面"), () =>
-        form(
-          p,
-          t("Remove this page?", "移除这个页面？"),
-          [],
-          () =>
-            edit((c) => {
-              c.pages = c.pages.filter((x) => x.id !== page.id);
-            }),
-          {
-            submit: t("Remove page", "移除页面"),
-            text: t("Linked notes stay in your vault.", "关联笔记保存在库内。"),
-          },
-        ),
-      );
+        removeItem(c => c.pages, cfg.pages.indexOf(page), page, t("Page removed", "已移除页面") + " · " + page.title, "page"));
       page.widgets.forEach((w, i) => {
         const wrap = row(group, t(...widgets[w.kind]), w.path || "");
         iconButton(wrap, t("Remove widget", "移除组件"), "x", () =>
-          edit((c) => {
-            c.pages.find((x) => x.id === page.id).widgets.splice(i, 1);
-          }),
+          removeItem(c => c.pages.find(x => x.id === page.id)?.widgets, i, w, t("Widget removed", "已移除组件") + " · " + t(...widgets[w.kind]), "widget"),
         );
       });
       button(
@@ -287,12 +303,24 @@ function renderSettings(p, host, active, go) {
   } else if (active === "sources") {
     const base = section(host, t("Default destination", "默认写入位置"));
     const tools = row(base, t("Dashboard folder", "看板目录"), cfg.root);
-    const setRoot = (path) =>
-      edit((c) => {
-        if (!visiblePath(path))
-          throw Error(t("Choose a visible vault folder", "请选择库内可见目录"));
+    const setRoot = path => {
+      if (!visiblePath(path)) throw Error(t("Choose a visible vault folder", "请选择库内可见目录"));
+      if (path === cfg.root) return;
+      const affected = [t(...cards.habits)];
+      for (const id of ["inbox", "journal", "finance", "drafts", "ideas"])
+        if (!cfg.sources[id]) affected.push(t(...sources[id]));
+      if (cfg.modules.media) affected.push(t(...modules.media));
+      if (cfg.modules.ai) affected.push(t(...modules.ai));
+      if (cfg.modules.weread) affected.push(t(...modules.weread));
+      form(p, t("Change dashboard folder", "更换看板目录"), [], () => edit(c => {
+        if (c.root !== cfg.root) throw Error(t("The folder changed. Reopen settings.", "目录已变化，请重新打开设置。"));
         c.root = path;
+      }), {
+        text: cfg.root + " → " + path + "\n" + affected.join(t(", ", "、")) + "\n" +
+          t("Existing notes stay in the original folder. Explicitly linked sources keep their location.", "现有笔记保留在原目录。已单独关联的来源继续使用原位置。"),
+        submit: t("Use this folder", "使用这个目录"),
       });
+    };
     button(tools, t("Choose", "选择"), () => pickPath(p, "folder", setRoot));
     button(tools, t("New location", "新位置"), () =>
       form(
@@ -317,6 +345,7 @@ function renderSettings(p, host, active, go) {
     );
     const box = section(host, t("Source bindings", "来源绑定"));
     for (const id of Object.keys(defaultSources)) {
+      if ((id === "finance" && !cfg.modules.finance) || (["drafts", "ideas"].includes(id) && !cfg.modules.creator)) continue;
       const [en, zh, kind] = sources[id],
         bound = cfg.sources[id];
       const tools = row(
@@ -327,13 +356,7 @@ function renderSettings(p, host, active, go) {
             ? t("Choose a source to show excerpts", "选择来源后显示摘录")
             : t("Uses the dashboard folder", "使用默认看板目录")),
       );
-      button(tools, t("Choose", "选择"), () =>
-        pickPath(p, kind, (path) =>
-          edit((c) => {
-            c.sources[id] = path;
-          }),
-        ),
-      );
+      button(tools, t("Choose", "选择"), () => p.chooseSource(id, redraw));
       if (bound)
         iconButton(tools, t("Reset binding", "重置绑定"), "rotate-ccw", () =>
           edit((c) => {
@@ -373,9 +396,7 @@ function renderSettings(p, host, active, go) {
         ),
       );
       iconButton(tools, t("Unlink project", "取消关联项目"), "unlink", () =>
-        edit((c) => {
-          c.projects = c.projects.filter((x) => x.id !== project.id);
-        }),
+        removeItem(c => c.projects, cfg.projects.indexOf(project), project, t("Project unlinked", "已取消关联") + " · " + project.name, "project"),
       );
     }
     button(
@@ -409,7 +430,7 @@ function renderSettings(p, host, active, go) {
             c.modules.media = v;
           }),
       );
-    Promise.resolve(accountSettings(p, social, redraw)).catch((e) => p.fail(e));
+    if (cfg.modules.creator && cfg.modules.media) Promise.resolve(accountSettings(p, social, redraw)).catch((e) => p.fail(e));
     const reading = section(host, t(...modules.weread));
     toggle(
       row(reading, t("Connect WeRead", "连接微信读书")),
@@ -431,15 +452,34 @@ function renderSettings(p, host, active, go) {
           }),
       );
       const tools = el(reading, "div", "", "dd-row");
-      button(tools, t("Test connection", "测试连接"), () => p.syncBooks(true));
-      button(
-        tools,
-        t("Sync highlights & thoughts", "同步划线与想法"),
-        () => p.syncBooks(),
-        { icon: "refresh-cw" },
-      );
+      const status = el(reading, "p", "", "dd-muted");
+      status.setAttribute("role", "status");
+      const draw = () => {
+        tools.replaceChildren();
+        const s = p.bookState;
+        const count = s.total === undefined ? "" : " · " + s.done + " / " + s.total;
+        const ready = !!p.getSecret(p.cfg.wereadSecret);
+        const labels = {
+          running: t("Syncing books", "正在同步书籍") + count, testing: t("Testing connection…", "正在测试连接…"),
+          cancelled: t("Sync stopped. Saved books are available.", "已停止，已保存的书摘可继续阅读。"),
+          connected: t("Connected to WeRead", "微信读书连接成功"),
+          done: t("Books updated", "已更新书籍") + " · " + (s.updated ?? 0) + (s.failed ? t(" · Failed ", " · 失败 ") + s.failed : ""),
+          failed: s.message, idle: "",
+        };
+        status.textContent = ready ? labels[s.phase] : t("Choose a key to connect.", "选择密钥后即可连接。");
+        if (s.phase === "running" || s.phase === "testing") {
+          button(tools, t("Stop", "停止"), () => p.cancel("weread"));
+        } else if (ready) {
+          button(tools, t("Test connection", "测试连接"), () => p.syncBooks(true));
+          button(tools, s.phase === "failed" || s.phase === "cancelled" || s.failed ? t("Retry sync", "重新同步") :
+            t("Sync highlights & thoughts", "同步划线与想法"), () => p.syncBooks(), { icon: "refresh-cw" });
+        }
+      };
+      for (const listener of p.bookListeners) if (!listener.host.isConnected) p.bookListeners.delete(listener);
+      p.bookListeners.add({ host: reading, draw });
+      draw();
     }
-    const ai = el(host, "section", "", "dd-group");
+    const ai = el(host, "div");
     Promise.resolve(aiSettings(p, ai, redraw)).catch((e) => p.fail(e));
   }
 }

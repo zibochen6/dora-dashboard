@@ -26,11 +26,21 @@ export function button(parent, label, fn, { icon: glyph, cls = "" } = {}) {
   node.type = "button";
   if (glyph) icon(node, glyph);
   if (label) el(node, "span", label);
+  let pending = false;
   node.addEventListener("click", async (ev) => {
+    if (pending) return;
     try {
-      await fn(ev);
+      const result = fn(ev);
+      if (result?.then) {
+        pending = true;
+        node.setAttribute("aria-busy", "true");
+        await result;
+      }
     } catch (error) {
       new Notice(error?.message || String(error));
+    } finally {
+      pending = false;
+      node.removeAttribute("aria-busy");
     }
   });
   return node;
@@ -41,6 +51,8 @@ export function iconButton(parent, label, glyph, fn) {
   b.title = label;
   return b;
 }
+export const keepFormOpen = Symbol("keepFormOpen");
+
 export function form(plugin, title, fields, onSubmit, options = {}) {
   class EditForm extends Modal {
     onOpen() {
@@ -86,6 +98,8 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
         "mod-cta",
       );
       ok.type = "submit";
+      const controls = { body, inputs, row, err, ok, modal: this };
+      options.setup?.(controls);
       body.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (ok.disabled) return;
@@ -99,11 +113,14 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
                 v.type === "textarea" ? v.value : v.value.trim(),
               ]),
             ),
+            controls,
           );
+          if (saved === keepFormOpen) { ok.disabled = false; return; }
           this.close();
           if (options.afterSave) Promise.resolve(options.afterSave(saved)).catch(error => plugin.fail(error));
         } catch (e) {
           err.textContent = plugin.errorText?.(e) || e.message || String(e);
+          options.onError?.(e, controls);
           ok.disabled = false;
         }
       });

@@ -1,4 +1,4 @@
-import { el, button, form } from "./ui.js";
+import { el, button, form, keepFormOpen } from "./ui.js";
 import { join, resolveSources, titleOf } from "./storage.js";
 import { listProfiles, identifyAccount } from "./media-collector.ts";
 import {
@@ -260,24 +260,11 @@ export async function creatorView(view, parent) {
   const paths = resolveSources(plugin.cfg);
   noteSection(view, parent, "drafts", paths.drafts);
   noteSection(view, parent, "ideas", paths.ideas);
+  if (!plugin.cfg.modules.media) return;
   const works = el(parent, "section", "", "dd-card");
   const header = el(works, "div", "", "dd-row");
   el(header, "h2", t("Works", "作品数据"));
-  if (!plugin.cfg.modules.media || !plugin.cfg.accounts.length) {
-    if (!plugin.cfg.modules.media)
-      for (const source of plugin.cfg.accounts) {
-        button(
-          works,
-          t("Open archive", "打开作品档案") + " · " + source.name,
-          async () => {
-            const path = archivePath(plugin.cfg.root, source.key);
-            if ((await plugin.notes.readOptional(path)) === null)
-              throw Error(t("No saved works yet.", "还没有已保存的作品。"));
-            await plugin.openNote(path);
-          },
-          { icon: "file-text" },
-        );
-      }
+  if (!plugin.cfg.accounts.length) {
     button(
       works,
       t("Configure creator accounts", "配置创作账号"),
@@ -507,6 +494,7 @@ export function accountSettings(plugin, parent, rerender) {
           );
           return;
         }
+        let verified;
         form(
           plugin,
           t("Verify signed-in account", "核对登录账号"),
@@ -517,20 +505,26 @@ export function accountSettings(plugin, parent, rerender) {
               options: platforms.map((id) => [id, t(...labels[id])]),
               value: platforms[0],
             },
-            {
+            ...(profiles.length > 1 ? [{
               key: "profileId",
               label: t("Ego Lite profile", "Ego Lite 配置"),
               options: profiles.map((p) => [p.id, p.name || p.id]),
               value: profiles[0].id,
-            },
-            {
-              key: "alias",
-              label: t("Display name (optional)", "显示名称（可选）"),
-            },
+            }] : []),
           ],
-          async (values) => {
-            const { platform, profileId } = values;
-            const identity = await useBrowser(plugin, section, (signal) =>
+          async (values, { body, inputs, ok, err }) => {
+            if (!validBinding(plugin, section)) return;
+            if (verified) {
+              await plugin.update(cfg => {
+                if (!cfg.modules.creator || !cfg.modules.media) return false;
+                validateSources([...cfg.accounts, verified]);
+                cfg.accounts.push(verified);
+              });
+              rerender();
+              return;
+            }
+            const { platform, profileId = profiles[0].id } = values;
+            const identity = await useBrowser(plugin, body, (signal) =>
               identifyAccount(platform, profileId, signal),
             );
             if (!identity) return;
@@ -539,7 +533,7 @@ export function accountSettings(plugin, parent, rerender) {
               platform,
               profileId,
               accountId: identity.id,
-              name: values.alias?.trim() || identity.name || identity.id,
+              name: identity.name || identity.id,
             };
             if (!validBinding(plugin, section)) return;
             try {
@@ -547,32 +541,15 @@ export function accountSettings(plugin, parent, rerender) {
             } catch (error) {
               throw Error(integrationMessage(error, t));
             }
-            status.replaceChildren();
-            el(
-              status,
-              "p",
-              t("Signed in as", "已登录账号") +
-                " " +
-                identity.name +
-                " · " +
-                identity.id +
-                " · " +
-                t(...labels[platform]),
-            );
-            button(status, t("Confirm binding", "确认绑定"), async () => {
-              if (!validBinding(plugin, section)) return;
-              await plugin.update((cfg) => {
-                if (!cfg.modules.creator || !cfg.modules.media) return;
-                try {
-                  validateSources([...cfg.accounts, binding]);
-                } catch (error) {
-                  throw Error(integrationMessage(error, t));
-                }
-                cfg.accounts.push(binding);
-              });
-              rerender();
-            });
-            button(status, t("Cancel", "取消"), () => status.replaceChildren());
+            if (!body.isConnected) return;
+            verified = binding;
+            for (const input of Object.values(inputs)) input.disabled = true;
+            const identityLine = el(body, "p", t("Signed in as", "已登录账号") + " " + binding.name +
+              " · " + identity.id + " · " + t(...labels[platform]));
+            identityLine.setAttribute("role", "status");
+            err.before(identityLine);
+            ok.textContent = t("Confirm binding", "确认绑定");
+            return keepFormOpen;
           },
           { submit: t("Verify account", "核对账号") },
         );

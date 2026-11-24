@@ -1,5 +1,6 @@
 import { Plugin, Notice, SecretComponent, getLanguage } from "obsidian";
 import { configFrom, renamed } from "./config.js";
+import { JournalEditor } from "./journal-editor.js";
 import { BoardView, viewType } from "./dashboard.js";
 import { Notes, resolveSources, titleOf, uniqueId } from "./storage.js";
 import { dayKey, visiblePath } from "./model.ts";
@@ -13,17 +14,21 @@ import {
 import { MediaController } from "./media-controller.ts";
 import { egoCollector } from "./media-collector.ts";
 import { DashboardSettings, SettingsDialog } from "./settings.js";
-import { button, el, form, row } from "./ui.js";
+import { button, el, form, pickPath, row, iconButton } from "./ui.js";
 
 export default class DoraDashboard extends Plugin {
   async onload() {
     this.views = new Set();
+    this.journalDrafts = new Map();
+    this.journalEditors = new Map();
+    this.bookListeners = new Set();
+    this.bookState = { phase: "idle" };
     this.queue = Promise.resolve();
     this.jobs = new Map();
     this.active = true;
     const raw = await this.loadData();
     this.cfg = configFrom(raw);
-    if (raw && raw.version !== 1) await this.saveData(this.cfg);
+    if (raw && raw.version !== this.cfg.version) await this.saveData(this.cfg);
     this.notes = new Notes(this.app.vault);
     this.registerView(viewType, (leaf) => new BoardView(leaf, this));
     this.addSettingTab(new DashboardSettings(this.app, this));
@@ -53,6 +58,9 @@ export default class DoraDashboard extends Plugin {
   }
   onunload() {
     this.active = false;
+    for (const editor of this.journalEditors.values()) editor.close();
+    this.journalDrafts.clear();
+    this.bookListeners.clear();
     for (const c of this.jobs.values()) c.abort();
     this.jobs.clear();
     void this.media?.stop();
@@ -74,18 +82,30 @@ export default class DoraDashboard extends Plugin {
     const labels = {
       "Task changed. Reopen the source note":
         "这条待办已变化，请重新打开原笔记。",
+      "The task source is no longer linked": "这条待办的来源已取消关联。",
+      "This task now has nested content. Open the source note": "这条待办已添加子项，请打开原笔记查看。",
       "Enter a single-line task title": "请填写单行待办标题。",
       "Edit inline comments and task markers in the source note": "请在原笔记中编辑这条待办的行内注释或任务标记。",
       "The task title could not be saved. Check the Markdown format": "无法保存这个待办标题，请检查 Markdown 格式。",
       "This journal changed elsewhere. Keep your draft and reopen it":
-        "日记已在别处修改，请保留草稿并重新打开。",
+        "原笔记已在别处修改，草稿仍在这里。",
       "Source note is missing": "找不到来源笔记，请重新绑定。",
       "Choose a visible vault path": "请选择库内可见路径。",
       "Choose a file inside this vault": "请选择当前库中的实际文件。",
       "A folder already uses this name": "这个名称已被一个文件夹使用。",
+      "Open the original note to edit this ambiguous date heading": "这个标题中的日期含义不明确，请打开日记原文编辑。",
+      "Close the open properties, code block or comment in the original journal": "请先在日记原文中补全未闭合的属性块、代码块或注释。",
+      "Close the properties block in the source note first": "请先在原笔记中补全属性块的结束标记。",
       "Invalid habit note": "习惯笔记格式有误，请检查原文。",
     };
-    return this.uiLanguage() === "zh" ? labels[msg] || msg : msg;
+    if (this.uiLanguage() === "zh") return labels[msg] || msg;
+    return ({
+      "This journal changed elsewhere. Keep your draft and reopen it": "This note changed elsewhere. Your draft is still here.",
+      "这一天的日记在别处被修改了。请复制未保存的文字，再从原日记查看最新内容。": "This entry changed elsewhere. Your draft is still here.",
+      "当天有多个日期段，请打开日记原文编辑。": "Several sections have this date. Open the original note to edit them.",
+      "无法定位当天日记，请检查月记末尾是否有未闭合的代码块或注释。": "Check the original note for an unclosed code block or comment.",
+      "请使用比当天日期更深的 Markdown 标题（例如 ###），以免覆盖其他日记段落。": "Use a heading below the date heading so other journal entries stay intact.",
+    })[msg] || msg;
   }
   fail(error) {
     new Notice(this.errorText(error));
@@ -113,6 +133,36 @@ export default class DoraDashboard extends Plugin {
       await this.app.workspace.openLinkText(path + fragment, "", true);
     else await this.app.workspace.getLeaf("tab").openFile(file);
   }
+  feedback(label, undo) {
+    this.lastAction = { label, undo };
+    for (const view of this.views) view.schedule();
+  }
+  feedbackBar(parent, redraw) {
+    const action = this.lastAction;
+    if (!action) return;
+    const bar = el(parent, "div", "", "dd-feedback");
+    const message = el(bar, "span", action.label);
+    message.setAttribute("role", "status");
+    button(bar, this.t("Undo", "撤销"), async () => {
+      if (this.lastAction !== action || action.pending) return;
+      action.pending = true;
+      try {
+        await action.undo();
+        if (this.lastAction === action) this.lastAction = null;
+        for (const view of this.views) view.schedule();
+        redraw();
+      } catch (error) {
+        message.textContent = this.errorText(error);
+      } finally { action.pending = false; }
+    }, { icon: "undo-2", cls: "dd-link" });
+    iconButton(bar, this.t("Dismiss message", "收起提示"), "x", () => {
+      if (this.lastAction === action && !action.pending) {
+        this.lastAction = null;
+        for (const view of this.views) view.schedule();
+        redraw();
+      }
+    });
+  }
   update(mutator) {
     const action = this.queue.then(async () => {
       const before = this.cfg,
@@ -130,13 +180,11 @@ export default class DoraDashboard extends Plugin {
         next.root !== before.root
       )
         this.cancel("ai");
-      if (
-        !next.modules.weread ||
-        before.wereadSecret !== next.wereadSecret ||
-        before.root !== next.root ||
-        before.sources.highlights !== next.sources.highlights
-      )
+      if (before.modules.weread !== next.modules.weread || before.wereadSecret !== next.wereadSecret ||
+          before.root !== next.root || before.sources.highlights !== next.sources.highlights) {
         this.cancel("weread");
+        this.setBookState({ phase: "idle" });
+      }
       if (
         !next.modules.creator ||
         !next.modules.media ||
@@ -154,8 +202,11 @@ export default class DoraDashboard extends Plugin {
     return action;
   }
   cancel(kind) {
-    this.jobs.get(kind)?.abort();
+    const job = this.jobs.get(kind);
+    if (!job) return;
+    job.abort();
     this.jobs.delete(kind);
+    if (kind === "weread") this.setBookState({ phase: "cancelled" });
   }
   jobSignal(kind) {
     this.cancel(kind);
@@ -196,34 +247,38 @@ export default class DoraDashboard extends Plugin {
       ? wereadCacheFolder(this.cfg.root, ref, this.getSecret(ref))
       : "";
   }
-  async syncBooks(test = false) {
-    if (!this.cfg.modules.weread)
-      throw Error(this.t("Enable WeRead first", "请先启用微信读书同步"));
-    const key = this.getSecret(this.cfg.wereadSecret);
-    if (!key)
-      throw Error(this.t("Select a WeRead secret", "请选择微信读书密钥"));
-    const signal = this.jobSignal("weread"),
-      service = new OfficialWeread(this.notes, {
-        cacheFolder: this.bookCache(),
-        readingFolder: this.cfg.sources.highlights,
-      });
-    if (test) {
-      await service.test(key, signal);
-      if (this.isCurrent("weread", signal))
-        new Notice(this.t("Connected to WeRead", "微信读书连接成功"));
-      return;
+  setBookState(state) {
+    this.bookState = state;
+    for (const listener of this.bookListeners) {
+      if (listener.host.isConnected) listener.draw();
+      else this.bookListeners.delete(listener);
     }
-    const result = await service.sync(key, signal, () => {});
-    if (this.isCurrent("weread", signal)) {
-      new Notice(
-        this.t("Updated books", "已更新书籍") +
-          " · " +
-          result.updated +
-          (result.failed
-            ? " / " + this.t("failed", "失败") + " " + result.failed
-            : ""),
-      );
-      for (const view of this.views) view.schedule();
+  }
+  async syncBooks(test = false) {
+    if (this.jobs.has("weread")) return;
+    if (!this.cfg.modules.weread) throw Error(this.t("Enable WeRead first", "请先启用微信读书同步"));
+    const key = this.getSecret(this.cfg.wereadSecret);
+    if (!key) throw Error(this.t("Select a WeRead secret", "请选择微信读书密钥"));
+    const signal = this.jobSignal("weread");
+    const service = new OfficialWeread(this.notes, { cacheFolder: this.bookCache(), readingFolder: this.cfg.sources.highlights });
+    this.setBookState({ phase: test ? "testing" : "running" });
+    try {
+      if (test) {
+        await service.test(key, signal);
+        if (this.isCurrent("weread", signal)) this.setBookState({ phase: "connected" });
+      } else {
+        const result = await service.sync(key, signal, (done, total) => {
+          if (this.isCurrent("weread", signal)) this.setBookState({ phase: "running", done, total });
+        });
+        if (this.isCurrent("weread", signal)) {
+          this.setBookState({ phase: "done", ...result });
+          for (const view of this.views) view.schedule();
+        }
+      }
+    } catch (error) {
+      if (this.isCurrent("weread", signal)) this.setBookState({ phase: "failed", test, message: this.errorText(error) });
+    } finally {
+      if (this.isCurrent("weread", signal)) this.jobs.delete("weread");
     }
   }
   async mediaController() {
@@ -279,21 +334,13 @@ export default class DoraDashboard extends Plugin {
         ],
       },
     ];
-    if (!opened) {
-      const linked = new Set(this.cfg.projects.map(project => project.path));
-      fields.push({
-        key: "path",
-        label: t("Link existing Markdown (optional)", "关联已有 Markdown（可选）"),
-        value: existing,
-        placeholder: t("Leave blank to create a checklist", "留空自动新建清单"),
-        suggestions: this.app.vault.getMarkdownFiles().map(file => file.path)
-          .filter(path => visiblePath(path) && !linked.has(path)),
-      });
-    }
+    if (!opened) fields.pop();
+    let chosen = existing;
     const title = opened
       ? t("Edit project", "编辑项目")
       : learning ? t("New learning project", "新建学习项目") : t("New project", "新建项目");
-    return form(this, title, fields, async ({ name, kind, path: linked }) => {
+    return form(this, title, fields, async ({ name, kind = learning ? "learning" : "project" }) => {
+      const linked = chosen;
       if (!name || name.length > 100 || /[\r\n]/.test(name))
         throw Error(t("Enter a project name of 1–100 characters", "请输入 1–100 个字符的项目名称"));
       const comparableName = name.toLowerCase();
@@ -328,13 +375,7 @@ export default class DoraDashboard extends Plugin {
           throw Error(t("Choose an existing Markdown note in this vault", "请选择库内已有 Markdown 笔记"));
       } else {
         await this.notes.updateDocument(path, (raw) => {
-          if (raw !== null)
-            throw Error(
-              this.t(
-                "Choose Link checklist to use the existing note",
-                "已有同名笔记，请用「关联已有清单」",
-              ),
-            );
+          if (raw !== null) throw Object.assign(Error(t("A note with this name already exists.", "已有同名笔记。")), { collisionPath: path });
           return "# " + safe + "\n";
         });
       }
@@ -347,108 +388,120 @@ export default class DoraDashboard extends Plugin {
         });
       } catch (error) {
         if (linked) throw error;
-        throw Error(t("Checklist created. Link it to retry", "清单已创建，请关联这份笔记重试") + " · " + path, {cause:error});
+        throw Object.assign(Error(t("Checklist created. Link it to retry", "清单已创建，可直接关联重试") + " · " + path, {cause:error}), {collisionPath:path});
       }
       return id;
-    }, {submit: opened ? t("Save", "保存") : t("Create project", "创建项目"), afterSave});
+    }, {
+      submit: opened ? t("Save", "保存") : t("Create project", "创建项目"),
+      text: existing || undefined, afterSave,
+      onError: (e, { err, body, inputs }) => {
+        if (!e.collisionPath) return;
+        const name = inputs.name.value;
+        button(err, t("Open existing note", "查看已有笔记"), () => this.openNote(e.collisionPath));
+        button(err, t("Link this note", "关联这篇笔记"), () => {
+          if (inputs.name.value !== name) return body.requestSubmit();
+          chosen = e.collisionPath;
+          body.requestSubmit();
+        });
+        inputs.name.addEventListener("input", () => { chosen = ""; err.replaceChildren(); }, { once: true });
+      },
+    });
   }
   habitForm(habit) {
     const t = (en, zh) => this.t(en, zh);
-    const weekdays = [
-      t("Sun", "周日"),
-      t("Mon", "周一"),
-      t("Tue", "周二"),
-      t("Wed", "周三"),
-      t("Thu", "周四"),
-      t("Fri", "周五"),
-      t("Sat", "周六"),
-    ];
-    const fields = [
-      {
-        key: "name",
-        label: t("Habit name", "习惯名称"),
-        value: habit?.name ?? "",
-      },
-    ];
-    if (!habit)
-      fields.push({
-        key: "preset",
-        label: t("Optional example", "可选示例"),
-        options: [
-          ["", "—"],
-          ["reading", t("Reading", "阅读")],
-          ["exercise", t("Exercise", "健身")],
-          ["music", t("Music practice", "练琴")],
-        ],
-      });
-    for (let i = 0; i < 7; i++)
-      fields.push({
-        key: "day" + i,
-        label: weekdays[i],
-        options: [
-          ["on", t("Scheduled", "计划日")],
-          ["off", t("Rest", "休息日")],
-        ],
-        value: !habit || habit.days.includes(i) ? "on" : "off",
-      });
-    form(this, t("Habit", "习惯"), fields, async (v) => {
-      const examples = {
-        reading: [t("Reading", "阅读"), "book-open"],
-        exercise: [t("Exercise", "健身"), "dumbbell"],
-        music: [t("Music practice", "练琴"), "music-2"],
-      };
-      const name = v.name || examples[v.preset]?.[0];
-      if (!name)
-        throw Error(
-          t("Enter a name or choose an example", "填写名称或选择示例"),
-        );
-      const days = weekdays
-        .map((_, i) => i)
-        .filter((i) => v["day" + i] === "on");
-      if (!days.length)
-        throw Error(t("Choose at least one day", "至少选择一个计划日"));
-      await this.notes.editHabits(this.cfg.root, (data) => {
+    const root = this.cfg.root;
+    const all = [0, 1, 2, 3, 4, 5, 6], work = [1, 2, 3, 4, 5];
+    const dayNames = [t("Sun", "周日"), t("Mon", "周一"), t("Tue", "周二"), t("Wed", "周三"), t("Thu", "周四"), t("Fri", "周五"), t("Sat", "周六")];
+    const dates = new Set(habit?.days ?? all);
+    const preset = dates.size === 7 ? "daily" : dates.size === 5 && work.every(i => dates.has(i)) ? "weekdays" : "custom";
+    const examples = [[t("Reading", "阅读"), "book-open"], [t("Exercise", "健身"), "sprout"], [t("Music practice", "练琴"), "music-2"]];
+    form(this, t("Habit", "习惯"), [
+      { key: "name", label: t("Habit name", "习惯名称"), value: habit?.name, required: true },
+      { key: "frequency", label: t("Frequency", "频率"), value: preset, options: [
+        ["daily", t("Every day", "每天")], ["weekdays", t("Weekdays", "工作日")], ["custom", t("Custom days", "自定义")],
+      ] },
+    ], async ({ name, frequency }) => {
+      const days = frequency === "daily" ? all : frequency === "weekdays" ? work : all.filter(i => dates.has(i));
+      if (!days.length) throw Error(t("Choose at least one day", "至少选择一天"));
+      if (this.cfg.root !== root) throw Error(t("The destination changed. Reopen this habit.", "写入位置已更改，请重新打开习惯。"));
+      await this.notes.editHabits(root, data => {
         if (habit) {
-          const row = data.items.find((h) => h.id === habit.id);
-          if (!row) throw Error(t("Habit changed", "习惯已变化"));
+          const row = data.items.find(h => h.id === habit.id);
+          if (!row || row.name !== habit.name || String(row.days) !== String(habit.days)) throw Error(t("Habit changed", "习惯已变化"));
           Object.assign(row, { name, days });
-        } else
-          data.items.push({
-            id: uniqueId(),
-            name,
-            days,
-            checks: [],
-            icon: examples[v.preset]?.[1] || "sprout",
-          });
+        } else data.items.push({ id: uniqueId(), name, days, checks: [], icon: examples.find(x => x[0] === name)?.[1] ?? "sprout" });
       });
       for (const view of this.views) view.schedule();
+    }, { setup: ({ inputs, body, err }) => {
+      if (!habit) {
+        const presets = el(body, "div", "", "dd-row");
+        inputs.name.parentElement.after(presets);
+        for (const [name] of examples) button(presets, name, () => { inputs.name.value = name; inputs.name.focus(); }, { cls: "dd-link" });
+      }
+      const custom = el(body, "fieldset", "", "dd-weekdays");
+      err.before(custom);
+      el(custom, "legend", t("Scheduled days", "计划日"));
+      for (const i of all) {
+        const label = el(custom, "label");
+        const check = el(label, "input");
+        check.type = "checkbox";
+        check.checked = dates.has(i);
+        check.onchange = () => check.checked ? dates.add(i) : dates.delete(i);
+        el(label, "span", dayNames[i]);
+      }
+      const show = () => { custom.hidden = inputs.frequency.value !== "custom"; };
+      inputs.frequency.onchange = show;
+      show();
+    } });
+  }
+  chooseSource(id, afterSave) {
+    const kind = id === "inbox" ? "file" : ["highlights", "thoughts"].includes(id) ? "any" : "folder";
+    const before = this.cfg.sources[id], oldMode = this.cfg.journalMode;
+    const save = async (path, mode) => {
+      await this.update(cfg => {
+        if (cfg.sources[id] !== before || (id === "journal" && cfg.journalMode !== oldMode))
+          throw Error(this.t("This source changed. Choose it again.", "来源已变化，请重新选择。"));
+        cfg.sources[id] = path;
+        if (mode) cfg.journalMode = mode;
+        if (["highlights", "thoughts"].includes(id) && !cfg.visible.includes(id)) cfg.visible.push(id);
+      });
+      afterSave?.();
+    };
+    pickPath(this, kind, async path => {
+      const modes = id === "journal" ? this.notes.journalModes(path) : [];
+      if (modes.length < 2) return save(path, modes[0]);
+      form(this, this.t("This folder contains daily and monthly notes", "这个目录同时包含日记和月记"), [{
+        key: "mode", label: this.t("Write entries to", "日记写入方式"), value: oldMode, options: [
+          ["daily", this.t("Daily notes", "每天一篇")], ["monthly", this.t("Monthly notes", "每月一篇")],
+        ],
+      }], ({ mode }) => save(path, mode), { text: path });
     });
   }
   async editDiary(day) {
-    const opened = await this.notes.diary(this.cfg, day);
-    form(
-      this,
-      day,
-      [
-        {
-          key: "text",
-          label: this.t("Journal entry", "日记正文"),
-          type: "textarea",
-          value: opened.text,
-        },
-      ],
-      async (v) => {
-        await this.notes.saveDiary(opened, v.text);
-        for (const view of this.views) view.schedule();
-      },
-    );
+    const cfg = this.cfg;
+    const key = JSON.stringify([this.notes.journalPath(cfg, day), cfg.journalMode, day]);
+    let opened = this.journalDrafts.get(key)?.opened;
+    if (!opened) {
+      try { opened = await this.notes.diary(cfg, day); }
+      catch (error) {
+        if (!["Close the properties block in the source note first", "Close the open properties, code block or comment in the original journal", "Open the original note to edit this ambiguous date heading"].includes(error.message)) throw error;
+        form(this, day, [], () => this.openNote(this.notes.journalPath(cfg, day)),
+          { text: this.errorText(error), submit: this.t("Open original note", "打开原文") });
+        return;
+      }
+    }
+    const existing = this.journalEditors.get(key);
+    if (existing) { existing.input?.focus(); return; }
+    const editor = new JournalEditor(this, day, opened, key);
+    this.journalEditors.set(key, editor);
+    editor.open();
   }
   async excerpts(kind, isVisible = () => true) {
     const cfg = this.cfg,
       source = cfg.sources[kind],
       rows = [];
     for (const file of source ? this.notes.noteList(source) : []) {
-      if (!isVisible() || this.cfg.sources[kind] !== source) return [];
+      if (!isVisible() || !this.cfg.visible.includes(kind) || this.cfg.sources[kind] !== source) return [];
       if (file.path.startsWith(cfg.root + "/WeRead/")) continue;
       const raw = await this.notes.readOptional(file.path);
       if (!raw) continue;
@@ -503,7 +556,7 @@ export default class DoraDashboard extends Plugin {
       for (const file of this.notes.noteList(cache)) {
         if (
           !isVisible() ||
-          !this.cfg.modules.weread ||
+          !this.cfg.modules.weread || !this.cfg.visible.includes(kind) ||
           this.bookCache() !== cache
         )
           return [];

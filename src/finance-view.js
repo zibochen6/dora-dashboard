@@ -1,7 +1,6 @@
 import { dayKey, validDay } from "./model.ts";
 import {
   flowBlock,
-  isCurrency,
   legacyCurrency,
   UnsupportedCurrency,
   moneyInput,
@@ -214,63 +213,56 @@ function editRecord(view, folder, currency, kind, existing, knownPeriods) {
 function editGoal(view, folder) {
   const plugin = view.plugin,
     t = (en, zh) => view.t(en, zh);
-  const { financeGoal, currency } = plugin.cfg;
+  const { currency } = plugin.cfg;
+  const financeGoal = plugin.cfg.financeGoals[currency] ?? "";
   form(
     plugin,
     t("Net worth goal", "净资产目标"),
     [
       {
         key: "goal",
-        label: t("Goal amount (clear to remove)", "目标金额（留空可移除）"),
-        value: financeGoal,
-      },
-      {
-        key: "currency",
-        label: t("Ledger currency (ISO code)", "账本币种（ISO 代码）"),
-        value: currency,
+        label: t("Goal amount", "目标金额"),
         required: true,
+        value: financeGoal,
       },
     ],
     async (values) => {
       assertSource(plugin, folder, t);
-      const code = values.currency.trim().toUpperCase();
-      if (!isCurrency(code))
-        throw new Error(
-          t(
-            "Use a recognized currency code such as CNY or USD.",
-            "请输入支持的币种代码，如 CNY 或 USD。",
-          ),
-        );
       const input = values.goal.trim();
-      if (financeGoal && code !== currency && input) {
+      const cents = parseAmount(t, input);
+      if (cents <= 0)
         throw new Error(
           t(
-            "Clear the current goal to switch currencies, then enter a goal in the new currency.",
-            "切换币种前，请清空原币种目标金额。切换后可填写新币种目标。",
-          ),
-        );
-      }
-      const cents = input ? parseAmount(t, input) : null;
-      if (cents === 0)
-        throw new Error(
-          t(
-            "Enter a positive goal or clear the field.",
-            "请输入正数目标，或留空移除目标。",
+            "Enter a positive goal.",
+            "请输入正数目标。",
           ),
         );
       await plugin.update((cfg) => {
-        if (cfg.financeGoal !== financeGoal || cfg.currency !== currency)
+        if ((cfg.financeGoals[currency] ?? "") !== financeGoal || cfg.currency !== currency)
           throw new Error(
             t(
               "These settings changed elsewhere. Reopen the goal to edit it.",
               "设置已在别处修改，请重新打开目标后编辑。",
             ),
           );
-        cfg.financeGoal = cents === null ? "" : decimal(cents);
-        cfg.currency = code;
+        cfg.financeGoals[currency] = decimal(cents);
       });
       await view.refresh();
-    },
+    }, { setup: ({ row, modal }) => {
+      if (!financeGoal) return;
+      button(row, t("Remove goal", "移除目标"), async () => {
+        await plugin.update(cfg => {
+          if (cfg.financeGoals[currency] !== financeGoal || cfg.currency !== currency || !currentSource(plugin, folder))
+            throw Error(t("The goal changed. Reopen it.", "目标已变化，请重新打开。"));
+          delete cfg.financeGoals[currency];
+        });
+        plugin.feedback(t("Goal removed", "已移除目标") + " · " + currency, () => plugin.update(cfg => {
+          if (cfg.financeGoals[currency]) throw Error(t("Another goal exists for this currency.", "此币种已有新目标。"));
+          cfg.financeGoals[currency] = financeGoal;
+        }));
+        modal.close(); await view.refresh();
+      }, { cls: "dd-link" });
+    } },
   );
 }
 
@@ -320,6 +312,17 @@ export async function financeView(view, parent) {
     await ledger(plugin, folder, currency);
   if (!currentSource(plugin, folder) || plugin.cfg.currency !== currency)
     return;
+  const units = el(parent, "label", "", "dd-row");
+  el(units, "span", t("Ledger currency", "账本币种"));
+  const select = el(units, "select");
+  const display = new Intl.DisplayNames([plugin.uiLanguage()], { type: "currency" });
+  for (const code of Intl.supportedValuesOf("currency"))
+    el(select, "option", code + " · " + display.of(code)).value = code;
+  select.value = currency;
+  select.onchange = () => {
+    const code = select.value;
+    plugin.update(cfg => { cfg.currency = code; }).catch(e => plugin.fail(e));
+  };
   const format = new Intl.NumberFormat(t("en", "zh-CN"), {
     style: "currency",
     currency,
@@ -386,9 +389,9 @@ export async function financeView(view, parent) {
   history(view, monthly, flows, "month", folder, currency, "flow", money);
 
   const goal = section(parent, t("Net worth goal", "净资产目标"));
-  if (plugin.cfg.financeGoal) {
+  if (plugin.cfg.financeGoals[currency]) {
     try {
-      const target = moneyInput(plugin.cfg.financeGoal);
+      const target = moneyInput(plugin.cfg.financeGoals[currency]);
       el(goal, "p", money(target));
       if (target > 0 && latest) {
         const progress = el(goal, "progress");
@@ -416,7 +419,7 @@ export async function financeView(view, parent) {
   }
   button(
     goal,
-    plugin.cfg.financeGoal
+    plugin.cfg.financeGoals[currency]
       ? t("Edit goal", "编辑目标")
       : t("Set a goal", "设定目标"),
     () => editGoal(view, folder),
