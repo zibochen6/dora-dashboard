@@ -645,8 +645,10 @@ async function screenshots() {
 async function projectCardChecks() {
   const name = "Single project card";
   const projects = page.locator("[data-card=projects]");
+  await page.bringToFront();
   await click("New project", projects);
-  const modal = page.locator(".dd-modal");
+  const projectModal = () => visibleControl(candidate => candidate.locator(".dd-modal").last(), "project dialog");
+  let modal = await projectModal();
   await modal.getByLabel("Project name", {exact:true}).fill(name);
   await click("Create project", modal);
   await modal.waitFor({state:"hidden"});
@@ -662,10 +664,12 @@ async function projectCardChecks() {
   assert.equal(await card.locator(".dd-task-row").count(),1);
   const source = await noteAt(project.path);
   await click("Delete project · "+name,card);
+  modal = await projectModal();
   await click("Cancel",modal);
   await card.waitFor();
   await click("Delete project · "+name,card);
-  await page.screenshot({path:join(output,"project-delete-confirm.png"),animations:"disabled"});
+  modal = await projectModal();
+  await modal.page().screenshot({path:join(output,"project-delete-confirm.png"),animations:"disabled"});
   await click("Delete",modal);
   await card.waitFor({state:"detached"});
   assert.equal(await noteAt(project.path),source);
@@ -675,6 +679,7 @@ async function projectCardChecks() {
   assert.equal(await card.count(),1);
   assert.equal(await noteAt(project.path),source);
   await click("Delete project · "+name,card);
+  modal = await projectModal();
   await click("Delete",modal);
   await card.waitFor({state:"detached"});
   accepted("Project creation renders one card, and deletion/cancel/undo preserve its source checklist");
