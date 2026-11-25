@@ -103,6 +103,7 @@ function host({code, original}) {
     read:path=>read()[path], config:()=>JSON.parse(localStorage.getItem("plugin")),
     async change(path,edit) { return vault.process(getFile(path),edit); },
     async language(language) { await plugin.update(config => {config.language = language;}); },
+    async configure(patch) { await plugin.update(config => Object.assign(config,patch)); },
   };
   return plugin.onload().then(() => makeView({}).onOpen());
 }
@@ -254,6 +255,16 @@ try {
     assert.ok(await card(added.id).evaluate(node=>node.scrollWidth<=node.clientWidth+1));
     await page.screenshot({path:resolve(output,"single-project-"+width+".png"),fullPage:true});
   }
+  // Older vaults can contain separate projects sharing a display name.
+  const legacy = {id:"legacy-project",name:added.name,path:"Checklist.md",learning:false};
+  await page.evaluate(projects=>window.qa.configure({projects}),[added,legacy]);
+  await button("Delete project · "+added.name,card(added.id)).click();
+  await button("Delete",modal).click();
+  await card(added.id).waitFor({state:"detached"});
+  await page.getByRole("status").filter({hasText:"Project removed · "+added.name}).waitFor();
+  await button("Undo").click();
+  await card(added.id).waitFor();
+  assert.deepEqual((await config()).projects.map(project=>project.id),[added.id,legacy.id]);
   assert.deepEqual(errors,[]);
   console.log("PASS community single project cards, creation, linking, editing, delete/cancel/undo, empty-list reopen, source preservation, Today, conflicts, and bilingual narrow UI");
 } finally {
