@@ -395,9 +395,10 @@ function renderSettings(p, host, active, go) {
           }),
         ),
       );
-      iconButton(tools, t("Unlink project", "取消关联项目"), "unlink", () =>
-        removeItem(c => c.projects, cfg.projects.indexOf(project), project, t("Project unlinked", "已取消关联") + " · " + project.name, "project"),
-      );
+      iconButton(tools, t("Unlink project", "取消关联项目"), "unlink", async () => {
+        await p.unlinkProject(project, t("Project unlinked", "已取消关联"));
+        redraw();
+      });
     }
     button(
       projects,

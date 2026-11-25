@@ -13,7 +13,7 @@ In Obsidian **Settings → Community plugins → Browse**, search for **Dora Das
 ## Your first day
 
 1. Click **Write your first task**, type the task and press Enter. Escape cancels the edit. Use the same pencil, checkbox and calendar in Today, Projects, Learning or a custom page. **Undo** restores the last dashboard change.
-2. **New project** creates a checklist. **Link checklist** uses a Markdown note already in the vault. Creating a project in Learning makes it a learning project.
+2. **New project** creates a checklist. **Link checklist** uses a Markdown note already in the vault. Creating a project in Learning makes it a learning project. Each project has one card. The trash button removes it from the dashboard with confirmation and Undo, while its source checklist stays in the vault.
 3. Give a habit a name to track it daily. Choose **Weekdays** or **Custom days** for another schedule. Click the tile to check in and click again to undo.
 4. **Write today** edits the daily note’s body or today’s section of a monthly note. Closing the editor keeps your draft for this session. Clearing an existing entry asks for confirmation. Use the arrow keys to select dates in the calendar.
 

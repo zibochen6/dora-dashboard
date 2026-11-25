@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { chromium } from "playwright-core";
 
 // Load the built plugin with an isolated Obsidian vault adapter in Chromium.
@@ -114,6 +115,8 @@ try {
   const page = await browser.newPage({viewport:{width:390,height:850}});
   page.setDefaultTimeout(6000);
   const errors = [];
+  const output = resolve("test-results/projects");
+  await mkdir(output,{recursive:true});
   page.on("pageerror",error => errors.push(error.message));
   await page.route("http://localhost:12345/",route => route.fulfill({contentType:"text/html",body:`<!doctype html><style>${styles}
     html,body,main.dd-host{height:100%;margin:0}.dd-modal{position:fixed;inset:10% 5% auto;background:white;padding:12px;z-index:10}</style><main></main>`}));
@@ -135,6 +138,7 @@ try {
     await button("Create project",modal).click();
     await modal.waitFor({state:"hidden"});
     const project = (await config()).projects.find(p => p.name === name);
+    assert.equal(await page.locator('[data-card="projects"] [data-project="'+project.id+'"]').count(),1);
     const add = button("Add task",card(project.id));
     await add.waitFor();
     await page.waitForFunction(id => document.activeElement?.closest("[data-project]")?.dataset.project === id,project.id);
@@ -211,8 +215,47 @@ try {
   await button("Undo").click();
   await page.getByRole("status").filter({hasText:/Task changed/}).waitFor();
   assert.ok((await read(linked.path)).includes("Edited in the note"));
+  const beforeDelete = await read(linked.path);
+  const beforeConfig = (await config()).projects;
+  const trash = button("Delete project · Learning workshop",linkedCard);
+  await trash.focus();
+  await trash.press("Enter");
+  await modal.getByRole("heading",{name:"Delete project",exact:true}).waitFor();
+  await button("Cancel",modal).click();
+  assert.deepEqual((await config()).projects,beforeConfig);
+  assert.equal(await read(linked.path),beforeDelete);
+  await page.evaluate(()=>window.qa.language("zh"));
+  await button("删除项目 · Learning workshop",linkedCard).click();
+  await modal.getByRole("heading",{name:"删除项目",exact:true}).waitFor();
+  await page.screenshot({path:resolve(output,"delete-project-zh-390.png"),fullPage:true});
+  await button("删除",modal).click();
+  await linkedCard.waitFor({state:"detached"});
+  assert.equal(await read(linked.path),beforeDelete);
+  await button("撤销").click();
+  await linkedCard.waitFor();
+  assert.deepEqual((await config()).projects,beforeConfig);
+  await page.evaluate(()=>window.qa.language("en"));
+  await boot();
+  await linkedCard.waitFor();
+  assert.equal(await page.locator('[data-card="projects"] [data-project="'+linked.id+'"]').count(),1);
+  assert.equal(await read(linked.path),beforeDelete);
+  for (const project of (await config()).projects) {
+    await button("Delete project · "+project.name,card(project.id)).click();
+    await button("Delete",modal).click();
+    await card(project.id).waitFor({state:"detached"});
+  }
+  await boot();
+  assert.deepEqual((await config()).projects,[]);
+  assert.equal(await page.locator(".dd-project").count(),0);
+  const added = await project("After empty list");
+  await button("Add task",card(added.id)).waitFor();
+  for (const width of [1440,390]) {
+    await page.setViewportSize({width,height:950});
+    assert.ok(await card(added.id).evaluate(node=>node.scrollWidth<=node.clientWidth+1));
+    await page.screenshot({path:resolve(output,"single-project-"+width+".png"),fullPage:true});
+  }
   assert.deepEqual(errors,[]);
-  console.log("PASS community project creation, linking, editing, Today and completion state, conflict handling, reopen, Chinese UI at 390px");
+  console.log("PASS community single project cards, creation, linking, editing, delete/cancel/undo, empty-list reopen, source preservation, Today, conflicts, and bilingual narrow UI");
 } finally {
   await browser.close();
 }

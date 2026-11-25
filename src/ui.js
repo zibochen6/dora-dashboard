@@ -59,6 +59,7 @@ export function form(plugin, title, fields, onSubmit, options = {}) {
       this.titleEl.setText(title);
       this.modalEl.addClass("dd-modal");
       const body = el(this.contentEl, "form", "", "dd-form");
+      if (options.description) el(body, "p", options.description, "dd-muted");
       const inputs = {};
       for (const field of fields) {
         const tag = field.options
