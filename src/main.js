@@ -315,6 +315,32 @@ export default class DoraDashboard extends Plugin {
       }),
     );
   }
+  async unlinkProject(opened, label = this.t("Project removed", "已删除项目")) {
+    const saved = structuredClone(opened);
+    let index, nextId;
+    await this.update(cfg => {
+      index = cfg.projects.findIndex(project => project.id === saved.id);
+      if (index < 0 || JSON.stringify(cfg.projects[index]) !== JSON.stringify(saved))
+        throw Error(this.t("The project changed. Reopen the dialog", "项目信息已变更，请重新打开操作窗口"));
+      nextId = cfg.projects[index + 1]?.id;
+      cfg.projects.splice(index, 1);
+    });
+    this.feedback(label + " · " + saved.name, () => this.update(cfg => {
+      if (cfg.projects.some(project => project.id === saved.id || project.path === saved.path))
+        throw Error(this.t("A matching project is already linked", "已有相同项目或关联清单，请核对当前项目"));
+      const successor = cfg.projects.findIndex(project => project.id === nextId);
+      cfg.projects.splice(successor >= 0 ? successor : Math.min(index, cfg.projects.length), 0, structuredClone(saved));
+    }));
+  }
+  removeProject(project) {
+    return form(this, this.t("Delete project", "删除项目"), [], () => this.unlinkProject(project), {
+      submit: this.t("Delete", "删除"),
+      description: this.t(
+        `Remove “${project.name}” from the dashboard. The checklist and its history stay in the source note.`,
+        `将「${project.name}」从看板移除。原清单和历史记录保存在来源笔记中。`,
+      ),
+    });
+  }
   projectForm({ learning = false, existing = "", project: opened, afterSave } = {}) {
     const t = (en, zh) => this.t(en, zh);
     const fields = [

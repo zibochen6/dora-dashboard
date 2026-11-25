@@ -551,6 +551,9 @@ export class BoardView extends ItemView {
       iconButton(title, this.t("Edit project", "编辑项目") + " · " + project.name, "pencil", () =>
         this.plugin.projectForm({learning:study,project}),
       );
+      iconButton(title, this.t("Delete project", "删除项目") + " · " + project.name, "trash-2", () =>
+        this.plugin.removeProject(project),
+      );
       const meter = el(box, "progress");
       meter.max = Math.max(1, tasks.length);
       meter.value = tasks.filter((t) => t.done).length;

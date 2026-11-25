@@ -642,6 +642,49 @@ async function screenshots() {
     "Synthetic wide light screenshot, themed dark screenshot, and 390-pixel narrow pane",
   );
 }
+async function projectCardChecks() {
+  const name = "Single project card";
+  const projects = page.locator("[data-card=projects]");
+  await page.bringToFront();
+  await click("New project", projects);
+  const projectModal = () => visibleControl(candidate => candidate.locator(".dd-modal").last(), "project dialog");
+  let modal = await projectModal();
+  await modal.getByLabel("Project name", {exact:true}).fill(name);
+  await click("Create project", modal);
+  await modal.waitFor({state:"hidden"});
+  const project = await page.evaluate(({id,name}) => app.plugins.plugins[id].cfg.projects.find(project=>project.name===name), {id,name});
+  const card = projects.locator('[data-project="'+project.id+'"]');
+  await card.getByRole("button", {name:"Add task",exact:true}).waitFor();
+  assert.equal(await card.count(),1);
+  await click("Add task",card);
+  const inline = page.locator(".dd-inline");
+  await inline.getByLabel("Title",{exact:true}).fill("Keep the source checklist");
+  await inline.getByLabel("Title",{exact:true}).press("Enter");
+  await card.getByRole("button",{name:"Keep the source checklist",exact:true}).waitFor();
+  assert.equal(await card.locator(".dd-task-row").count(),1);
+  const source = await noteAt(project.path);
+  await click("Delete project · "+name,card);
+  modal = await projectModal();
+  await click("Cancel",modal);
+  await card.waitFor();
+  await click("Delete project · "+name,card);
+  modal = await projectModal();
+  await modal.page().screenshot({path:join(output,"project-delete-confirm.png"),animations:"disabled"});
+  await click("Delete",modal);
+  await card.waitFor({state:"detached"});
+  assert.equal(await noteAt(project.path),source);
+  await page.getByRole("status").filter({hasText:"Project removed · "+name}).waitFor();
+  await click("Undo");
+  await card.waitFor();
+  assert.equal(await card.count(),1);
+  assert.equal(await noteAt(project.path),source);
+  await click("Delete project · "+name,card);
+  modal = await projectModal();
+  await click("Delete",modal);
+  await card.waitFor({state:"detached"});
+  accepted("Project creation renders one card, and deletion/cancel/undo preserve its source checklist");
+}
+
 async function libraryCase() {
   const host = await makeHost("Library");
   await install(host);
@@ -804,6 +847,7 @@ async function libraryCase() {
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-current") === "page" && document.activeElement.textContent.includes("Learning"));
   await click("Home");
   accepted("Namesake tasks keep the exact source after refresh; unlink preserves the unsaved input and blocks writes; keyboard navigation keeps focus");
+  await projectCardChecks();
   await click("Settings", page.locator(".dd-nav"));
   const settings = await visibleControl((p) => p.locator(".dd-settings-dialog").last(), "dashboard settings");
   for (const tab of [
